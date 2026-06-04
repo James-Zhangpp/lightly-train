@@ -25,18 +25,20 @@ from pathlib import Path
 import lightly_train
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_ROOT = Path(__file__).resolve().parent / "weldingcls-data"
+DATA_ROOT = Path(__file__).resolve().parent / "DataSet" / "weldingcls-data"
 OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vitt16_cls_v1"
 EXPORTED_BEST = OUT_DIR / "exported_models" / "exported_best.pt"
 
 CLASSES = {
     0: "no_fpc",
     1: "fpc",
+    2: "NG",
 }
 
 FINE_TUNE_FROM_BEST = EXPORTED_BEST.is_file()
 STEPS = 3000 if FINE_TUNE_FROM_BEST else 8000
-LR_WARMUP = (250, 500) if FINE_TUNE_FROM_BEST else (500, 1000)
+# 分类仅支持 int | "auto"（非语义分割的 (vit, head) 二元组）
+LR_WARMUP = 250 if FINE_TUNE_FROM_BEST else 500
 
 if __name__ == "__main__":
     train_dir = DATA_ROOT / "train"
@@ -72,6 +74,7 @@ if __name__ == "__main__":
         model_args={
             "lr": 1e-4 if not FINE_TUNE_FROM_BEST else 5e-5,
             "weight_decay": 0.01,
+            # 默认 "auto" -> min(500, steps)；微调可缩短 warmup
             "lr_warmup_steps": LR_WARMUP,
             "backbone_freeze": False,
         },

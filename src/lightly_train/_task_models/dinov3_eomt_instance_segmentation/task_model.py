@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import logging
 import math
 from typing import TYPE_CHECKING, Any, Literal
@@ -725,16 +726,21 @@ class DINOv3EoMTInstanceSegmentation(TaskModel):
         input_names = ["images"]
         output_names = ["labels", "masks", "scores"]
 
+        export_kwargs: dict[str, Any] = {
+            "input_names": input_names,
+            "output_names": output_names,
+            "opset_version": opset_version,
+            "dynamic_axes": dynamic_axes,
+            **(format_args or {}),
+        }
+        if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+            export_kwargs["dynamo"] = False
+
         torch.onnx.export(
             self,
             (dummy_input,),
             str(out),
-            input_names=input_names,
-            output_names=output_names,
-            opset_version=opset_version,
-            dynamo=False,
-            dynamic_axes=dynamic_axes,
-            **(format_args or {}),
+            **export_kwargs,
         )
 
         if simplify:

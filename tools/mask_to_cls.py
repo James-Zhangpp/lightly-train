@@ -1,16 +1,20 @@
-"""从语义分割数据生成图像分类目录（按 mask 是否含前景类划分）。
+"""从语义分割数据生成图像分类目录（按 mask 像素类别 id 划分）。
 
-输入（与 tools/weldingseg-data 一致）：
+输入：
   img_dir/{train,val}/*.png
-  ann_dir/{train,val}/*.png   # 像素值 = 类别 id
+  ann_dir/{train,val}/*.png   # 像素值 = 语义分割类别 id
 
 输出（ImageFolder 结构）：
-  weldingcls-data/
-    train/<class_name>/*.png
-    val/<class_name>/*.png
+  <out-root>/train/<class_name>/*.png
+  <out-root>/val/<class_name>/*.png
 
-默认：mask 中类别 1（fpc）像素数 >= --min-area -> fpc，否则 no_fpc。
-默认带 ROI 裁剪 (900,700,768,768)，与 test.py 一致；--no-crop 则不裁。
+分类规则（与产线一致）：
+  mask 中 fpc(1) 像素 >= --min-area -> 文件夹 fpc
+  否则 -> no_fpc（含 mask 像素 2「NG」、全背景、无 FPC 等）
+
+分割 mask 里的 2 仅表示缺陷区域，图像级分类统一为 no_fpc，不单独建 NG 类。
+
+默认不裁剪（512×512 数据）；全幅相机图用 --full-image-roi。
 """
 
 from __future__ import annotations
@@ -21,33 +25,52 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-DEFAULT_SEG_ROOT = Path(__file__).resolve().parent / "DataSet" /"weldingseg-data"
-DEFAULT_OUT_ROOT = Path(__file__).resolve().parent / "DataSet" /"weldingcls-data"
+DEFAULT_SEG_ROOT = Path(__file__).resolve().parent / "DataSet" / "weldingseg-data"
+DEFAULT_OUT_ROOT = Path(__file__).resolve().parent / "DataSet" / "weldingcls-data"
 
-DEFAULT_FOREGROUND_ID = 1
-CLASS_NAMES = {0: "no_fpc", 1: "fpc"}
-DEFAULT_CROP_ROI = (900, 700, 768, 768)
+# 仅两类目录（与 train_cls.py CLASSES 一致）
+CLASS_NAMES: dict[int, str] = {
+    0: "no_fpc",
+    1: "fpc",
+}
+FPC_CLASS_ID = 1
+# 全幅原图 + 现场 ROI 时用；512 训练集不要设默认 ROI
+FULL_IMAGE_CROP_ROI = (900, 700, 768, 768)
 
 
-def crop_roi(image: Image.Image, roi: tuple[int, int, int, int]) -> Image.Image:
+def crop_roi(
+    image: Image.Image, roi: tuple[int, int, int, int]
+) -> Image.Image | None:
+    """裁剪 ROI；若原图小于 ROI 起点导致宽高为 0，返回 None。"""
     x, y, w, h = roi
+    if w <= 0 or h <= 0:
+        return None
     img_w, img_h = image.size
     x0 = max(0, min(x, img_w))
     y0 = max(0, min(y, img_h))
     x1 = min(x0 + w, img_w)
     y1 = min(y0 + h, img_h)
-    return image.crop((x0, y0, x1, y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return image.crop((x0, y0, x1, y1)).copy()
 
 
-def label_from_mask(
-    mask_path: Path,
-    *,
-    foreground_id: int,
-    min_area: int,
-) -> int:
-    mask = np.array(Image.open(mask_path))
-    fg_pixels = int((mask == foreground_id).sum())
-    return 1 if fg_pixels >= min_area else 0
+def classify_from_mask_array(mask: np.ndarray, *, min_area: int) -> int:
+    """有足够 fpc(1) 像素则为 fpc，否则 no_fpc（mask 为 2 的 NG 图也归 no_fpc）。"""
+    if int((mask == FPC_CLASS_ID).sum()) >= min_area:
+        return FPC_CLASS_ID
+    return 0
+
+
+def load_mask_for_label(mask_path: Path, roi: tuple[int, int, int, int] | None) -> np.ndarray | None:
+    with Image.open(mask_path) as src:
+        mask_img = src.convert("L")
+        if roi is None:
+            return np.array(mask_img)
+        cropped = crop_roi(mask_img, roi)
+        if cropped is None:
+            return None
+        return np.array(cropped)
 
 
 def process_split(
@@ -55,9 +78,8 @@ def process_split(
     out_root: Path,
     split: str,
     *,
-    foreground_id: int,
     min_area: int,
-    crop_roi: tuple[int, int, int, int] | None,
+    roi: tuple[int, int, int, int] | None,
 ) -> dict[str, int]:
     img_dir = seg_root / "img_dir" / split
     ann_dir = seg_root / "ann_dir" / split
@@ -84,18 +106,28 @@ def process_split(
             print(f"[skip] no mask: {img_path.name}")
             continue
 
-        class_id = label_from_mask(
-            ann_path, foreground_id=foreground_id, min_area=min_area
-        )
-        class_name = CLASS_NAMES[class_id]
+        mask_arr = load_mask_for_label(ann_path, roi)
+        if mask_arr is None:
+            with Image.open(img_path) as src:
+                size = src.size
+            print(
+                f"[skip] ROI 超出图像: {img_path.name} size={size} roi={roi}"
+            )
+            continue
+
+        class_id = classify_from_mask_array(mask_arr, min_area=min_area)
+        class_name = CLASS_NAMES.get(class_id, f"class_{class_id}")
         out_dir = out_root / split / class_name
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / img_path.name
 
-        image = Image.open(img_path).convert("RGB")
-        if crop_roi is not None:
-            image = crop_roi(image, crop_roi)
-        image.save(out_path)
+        with Image.open(img_path) as src:
+            image = src.convert("RGB").copy()
+        if roi is not None:
+            cropped = crop_roi(image, roi)
+            assert cropped is not None
+            image = cropped
+        image.save(out_path, format="PNG")
 
         counts[class_name] += 1
 
@@ -106,12 +138,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="mask 语义分割数据 -> 分类 ImageFolder")
     parser.add_argument("--seg-root", type=Path, default=DEFAULT_SEG_ROOT)
     parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
-    parser.add_argument("--foreground-id", type=int, default=DEFAULT_FOREGROUND_ID)
     parser.add_argument(
         "--min-area",
         type=int,
         default=16,
-        help="前景像素数下限，低于则标为 no_fpc",
+        help="某类 mask 像素数 >= 此值才归入该类，否则为 no_fpc(0)",
     )
     parser.add_argument(
         "--crop-roi",
@@ -119,37 +150,37 @@ def main() -> None:
         nargs=4,
         metavar=("X", "Y", "W", "H"),
         default=None,
-        help=f"裁剪 ROI；默认 {DEFAULT_CROP_ROI}",
+        help="启用 ROI 裁剪 (x y w h)；512 数据勿用。全幅图示例: --crop-roi 900 700 768 768",
     )
     parser.add_argument(
-        "--no-crop",
+        "--full-image-roi",
         action="store_true",
-        help="不裁剪",
+        help=f"等价于 --crop-roi {' '.join(map(str, FULL_IMAGE_CROP_ROI))}（仅全幅相机图）",
     )
     args = parser.parse_args()
 
-    if args.no_crop:
-        crop: tuple[int, int, int, int] | None = None
+    if args.full_image_roi:
+        crop: tuple[int, int, int, int] | None = FULL_IMAGE_CROP_ROI
     elif args.crop_roi is not None:
         crop = tuple(args.crop_roi)
     else:
-        crop = DEFAULT_CROP_ROI
+        crop = None
 
     args.out_root.mkdir(parents=True, exist_ok=True)
 
     print(f"seg_root={args.seg_root}")
     print(f"out_root={args.out_root}")
     print(f"classes={CLASS_NAMES}")
-    print(f"foreground_id={args.foreground_id}, min_area={args.min_area}, crop_roi={crop}")
+    print(f"rule: fpc(1)>={args.min_area}px else no_fpc; mask id 2 -> no_fpc")
+    print(f"min_area={args.min_area}, crop_roi={crop}")
 
     for split in ("train", "val"):
         counts = process_split(
             args.seg_root,
             args.out_root,
             split,
-            foreground_id=args.foreground_id,
             min_area=args.min_area,
-            crop_roi=crop,
+            roi=crop,
         )
         print(f"[{split}] {counts}")
 
