@@ -49,9 +49,9 @@ CLASS_NAMES = {
     2: "NG"
 }
 
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 FINE_TUNE_FROM_BEST = EXPORTED_BEST.is_file()
-STEPS = 4000 if FINE_TUNE_FROM_BEST else 12000
+STEPS = 3000 if FINE_TUNE_FROM_BEST else 5000
 LR_WARMUP = (500, 750) if FINE_TUNE_FROM_BEST else (1000, 1500)
 
 if __name__ == "__main__":
@@ -93,10 +93,33 @@ if __name__ == "__main__":
             "weight_decay": 0.05,
             "lr_warmup_steps": LR_WARMUP,
             "num_queries": 50,
-            "backbone_freeze": False,
+            "backbone_freeze": True,
+            "loss_class_coefficient": 5.0
         },
         transform_args={
-            "image_size": (512, 512),
+            "image_size": (1024, 1024),
+            "random_flip": {
+                "horizontal_prob": 0.5,
+                "vertical_prob": 0.5,
+            },
+            "random_rotate_90": {"prob": 0.5},
+            "random_rotate": {"prob": 0.5, "degrees": 15.0},
+            "color_jitter": {
+                "brightness": 0.2,
+                "contrast": 0.2,
+                "saturation": 0.2,
+                "hue": 0.1,
+                "prob": 0.5,
+                "strength": 1.0,
+            },
+            "scale_jitter": {
+                "sizes": None,
+                "min_scale": 0.6,
+                "max_scale": 1.4,
+                "num_scales": 10,
+                "prob": 1.0,
+                "divisible_by": None,
+            },
             "normalize": {
                 "mean": (0.485, 0.456, 0.406),
                 "std": (0.229, 0.224, 0.225),

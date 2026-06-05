@@ -25,12 +25,12 @@ DEFAULT_EXPERIMENT = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_inst_v1"
 DEFAULT_ONNX = DEFAULT_EXPERIMENT / "exported_models" / "model.onnx"
 DEFAULT_META = DEFAULT_EXPERIMENT / "exported_models" / "export_meta.json"
 
-DEFAULT_IMAGE_DIR = Path(r"C:\Users\ASUS\Desktop\D2 5L\原图")
-DEFAULT_OUT_DIR = Path(r"C:\Users\ASUS\Desktop\D2 5L\inst_test")
+DEFAULT_IMAGE_DIR = Path(r"C:\Users\ASUS\Desktop\D2 L12\原图")
+DEFAULT_OUT_DIR = Path(r"C:\Users\ASUS\Desktop\D2 L12\inst_test")
 
-FULL_IMAGE_CROP_ROI = (900, 700, 768, 768)
+FULL_IMAGE_CROP_ROI = (0, 0, 2048, 2048)
 DEFAULT_CROP_ROI: tuple[int, int, int, int] | None = FULL_IMAGE_CROP_ROI
-DEFAULT_RESIZE_AFTER_CROP = 512
+DEFAULT_RESIZE_AFTER_CROP = 1024
 DEFAULT_THRESHOLD = 0.5
 DEFAULT_MIN_AREA = 16
 DEFAULT_ALPHA = 0.45
@@ -290,6 +290,10 @@ def draw_instances_overlay(
         draw.rectangle([tx, ty, tx + tw + 4, ty + th + 2], fill=(0, 0, 0))
         draw.text((tx + 2, ty + 1), tag, fill=TEXT_COLOR, font=font)
 
+    has_ng = any(inst["class_name"].upper() == "NG" for inst in instances)
+    if has_ng:
+        out = draw_ng(out)
+
     return out
 
 
@@ -358,10 +362,14 @@ def process_one(
     size_note = f"crop={did_crop}"
     if did_crop and resize_after_crop > 0:
         size_note += f"->{resize_after_crop}"
+    has_ng = any(inst["class_name"].upper() == "NG" for inst in instances)
+    status = "NG" if (n == 0 or has_ng) else "OK"
     print(
         f"{image_path.name} ({size_note}) instances={n} "
-        f"{'NG' if n == 0 else 'OK'} -> {out_path.name}"
+        f"{status} -> {out_path.name}"
     )
+    for idx, inst in enumerate(instances):
+        print(f"  - inst #{idx + 1}: class_id={inst['class_id']}, name={inst['class_name']}, score={inst['score']:.4f}")
 
     if save_all and instances:
         for idx, inst in enumerate(instances):

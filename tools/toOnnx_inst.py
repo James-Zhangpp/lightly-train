@@ -24,8 +24,47 @@ DEFAULT_CHECKPOINT = DEFAULT_EXPERIMENT / "exported_models" / "exported_best.pt"
 META_FILENAME = "export_meta.json"
 
 
-def save_export_meta(model: torch.nn.Module, path: Path) -> None:
-    classes = getattr(model, "classes", {})
+def parse_classes(val: str) -> dict[int, str]:
+    # Try parsing as JSON first
+    try:
+        parsed = json.loads(val)
+        if isinstance(parsed, dict):
+            return {int(k): str(v) for k, v in parsed.items()}
+    except json.JSONDecodeError:
+        pass
+
+    # Try parsing as key=value pairs
+    try:
+        res = {}
+        for item in val.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" in item:
+                k, v = item.split("=", 1)
+            elif ":" in item:
+                k, v = item.split(":", 1)
+            else:
+                raise ValueError(f"Invalid pair format: '{item}'")
+            res[int(k.strip())] = v.strip()
+        return res
+    except Exception as e:
+        raise argparse.ArgumentTypeError(
+            f"Could not parse classes: '{val}'. Must be JSON or key=value pairs. Error: {e}"
+        )
+
+
+def save_export_meta(
+    model: torch.nn.Module,
+    path: Path,
+    classes: dict[int, str] | None = None,
+) -> None:
+    if classes is None:
+        classes = getattr(model, "classes", {})
+    if not classes:
+        # Fallback to train_inst.py's CLASS_NAMES defaults
+        classes = {0: "ignore", 1: "OK", 2: "NG"}
+
     image_size = getattr(model, "image_size", (512, 512))
     image_normalize = getattr(model, "image_normalize", None)
     meta = {
@@ -44,6 +83,7 @@ def export_onnx(
     checkpoint: Path,
     onnx_out: Path,
     *,
+    classes: dict[int, str] | None = None,
     dynamic_batch: bool = True,
     simplify: bool = True,
     verify: bool = True,
@@ -70,7 +110,7 @@ def export_onnx(
         verify=verify,
     )
 
-    save_export_meta(model, onnx_out.parent / META_FILENAME)
+    save_export_meta(model, onnx_out.parent / META_FILENAME, classes=classes)
     print("ONNX export finished.")
 
 
@@ -109,6 +149,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="实例分割模型导出 ONNX")
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--classes",
+        type=parse_classes,
+        default=None,
+        help="手动设置类别映射，例如 '0=ignore,1=OK,2=NG' 或 JSON 字符串",
+    )
     parser.add_argument("--no-dynamic-batch", action="store_true")
     parser.add_argument("--no-simplify", action="store_true")
     parser.add_argument("--no-verify", action="store_true")
@@ -130,6 +176,7 @@ def main() -> None:
     export_onnx(
         checkpoint,
         onnx_out,
+        classes=args.classes,
         dynamic_batch=not args.no_dynamic_batch,
         simplify=not args.no_simplify,
         verify=not args.no_verify,
