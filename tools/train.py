@@ -28,7 +28,8 @@ import lightly_train
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = Path(__file__).resolve().parent / "weldingseg-data"
-OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_v2"
+#OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_v2"
+OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eupe_eomt_v2"
 EXPORTED_BEST = OUT_DIR / "exported_models" / "exported_best.pt"
 
 # ---------------------------------------------------------------------------
@@ -50,7 +51,8 @@ if __name__ == "__main__":
         # 实验输出目录；默认无，必填
         out=OUT_DIR,
         # 预训练骨干；例如 dinov3/vits16-eomt，无单独默认值
-        model="dinov3/vits16-eomt",
+        # model="dinov3/vits16-eomt",
+        model="dinov3/vits16-eupe-eomt",
         data={
             "train": {
                 "images": DATA_ROOT / "img_dir" / "train",
