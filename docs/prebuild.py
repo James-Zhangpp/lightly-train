@@ -12,11 +12,11 @@ from lightly_train._data.mask_semantic_segmentation_dataset import (
     MaskSemanticSegmentationDataArgs,
 )
 from lightly_train._methods import method_helpers
-from lightly_train._task_models.dinov2_linear_semantic_segmentation.train_model import (
-    DINOv2LinearSemanticSegmentationTrain,
-)
 from lightly_train._task_models.image_classification_multihead.train_model import (
     ImageClassificationMultiheadTrain,
+)
+from lightly_train._task_models.linear_semantic_segmentation.train_model import (
+    LinearSemanticSegmentationTrain,
 )
 from lightly_train._task_models.semantic_segmentation_multihead.train_model import (
     SemanticSegmentationMultiheadTrain,
@@ -103,36 +103,42 @@ def dump_transform_args_for_tasks(dest_dir: Path) -> None:
         if train_model_cls in {
             SemanticSegmentationMultiheadTrain,
             ImageClassificationMultiheadTrain,
-            DINOv2LinearSemanticSegmentationTrain,
+            LinearSemanticSegmentationTrain,
         }:
             continue
-        transform_args_cls = train_model_cls.train_transform_cls.transform_args_cls
-        kwargs = {}
-        if "ignore_index" in transform_args_cls.model_fields:
-            kwargs["ignore_index"] = MaskSemanticSegmentationDataArgs.ignore_index
+        variants = [("", train_model_cls.__name__.lower())]
+        if train_model_cls.__name__ == "LTDETRObjectDetectionTrain":
+            variants.append(("dinov2/", "dinov2ltdetrobjectdetectiontrain"))
 
-        train_transform_args = train_model_cls.train_transform_cls.transform_args_cls(
-            **kwargs
-        )
-        val_transform_args = train_model_cls.val_transform_cls.transform_args_cls(
-            **kwargs
-        )
-        train_args = train_task_helpers.pretty_format_args(
-            train_transform_args.model_dump(),
-        )
-        val_args = train_task_helpers.pretty_format_args(
-            val_transform_args.model_dump()
-        )
-        name = train_model_cls.__name__.lower()
-        # write to file
-        with open(dest_dir / f"{name}_train_transform_args.md", "w") as f:
-            f.write("```json\n")
-            f.write(train_args + "\n")
-            f.write("```\n")
-        with open(dest_dir / f"{name}_val_transform_args.md", "w") as f:
-            f.write("```json\n")
-            f.write(val_args + "\n")
-            f.write("```\n")
+        for model_name, name in variants:
+            train_transform_args_cls = train_model_cls.get_train_transform_cls(
+                model_name=model_name
+            ).transform_args_cls
+            val_transform_args_cls = train_model_cls.get_val_transform_cls(
+                model_name=model_name
+            ).transform_args_cls
+
+            kwargs = {}
+            if "ignore_index" in train_transform_args_cls.model_fields:
+                kwargs["ignore_index"] = MaskSemanticSegmentationDataArgs.ignore_index
+
+            train_transform_args = train_transform_args_cls(**kwargs)
+            val_transform_args = val_transform_args_cls(**kwargs)
+            train_args = train_task_helpers.pretty_format_args(
+                train_transform_args.model_dump(),
+            )
+            val_args = train_task_helpers.pretty_format_args(
+                val_transform_args.model_dump()
+            )
+            # write to file
+            with open(dest_dir / f"{name}_train_transform_args.md", "w") as f:
+                f.write("```json\n")
+                f.write(train_args + "\n")
+                f.write("```\n")
+            with open(dest_dir / f"{name}_val_transform_args.md", "w") as f:
+                f.write("```json\n")
+                f.write(val_args + "\n")
+                f.write("```\n")
 
 
 def dump_method_args(dest_dir: Path) -> None:

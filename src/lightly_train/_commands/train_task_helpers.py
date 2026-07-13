@@ -21,6 +21,7 @@ from filelock import FileLock
 from lightning_fabric import Fabric
 from lightning_fabric import utilities as fabric_utilities
 from lightning_fabric.loggers.logger import Logger as FabricLogger
+from PIL.Image import Image as PILImage
 from pydantic import TypeAdapter
 from torch.nn import Module
 from torch.optim import Optimizer  # type: ignore[attr-defined]
@@ -37,6 +38,7 @@ from lightly_train._data._serialize.memory_mapped_sequence import (
 from lightly_train._data.task_data_args import TaskDataArgs
 from lightly_train._data.task_dataset import TaskDataset, TaskDatasetArgs
 from lightly_train._env import Env
+from lightly_train._loggers import logger_helpers
 from lightly_train._loggers.mlflow import MLFlowLogger, MLFlowLoggerArgs
 from lightly_train._loggers.task_logger_args import TaskLoggerArgs
 from lightly_train._loggers.tensorboard import TensorBoardLogger
@@ -56,12 +58,6 @@ from lightly_train._task_models.dinov2_eomt_panoptic_segmentation.train_model im
 from lightly_train._task_models.dinov2_eomt_semantic_segmentation.train_model import (
     DINOv2EoMTSemanticSegmentationTrain,
 )
-from lightly_train._task_models.dinov2_linear_semantic_segmentation.train_model import (
-    DINOv2LinearSemanticSegmentationTrain,
-)
-from lightly_train._task_models.dinov2_ltdetr_object_detection.train_model import (
-    DINOv2LTDETRObjectDetectionTrain,
-)
 from lightly_train._task_models.dinov3_eomt_instance_segmentation.train_model import (
     DINOv3EoMTInstanceSegmentationTrain,
 )
@@ -71,14 +67,20 @@ from lightly_train._task_models.dinov3_eomt_panoptic_segmentation.train_model im
 from lightly_train._task_models.dinov3_eomt_semantic_segmentation.train_model import (
     DINOv3EoMTSemanticSegmentationTrain,
 )
-from lightly_train._task_models.dinov3_ltdetr_object_detection.train_model import (
-    DINOv3LTDETRObjectDetectionTrain,
-)
 from lightly_train._task_models.image_classification.train_model import (
     ImageClassificationTrain,
 )
 from lightly_train._task_models.image_classification_multihead.train_model import (
     ImageClassificationMultiheadTrain,
+)
+from lightly_train._task_models.linear_semantic_segmentation.train_model import (
+    LinearSemanticSegmentationTrain,
+)
+from lightly_train._task_models.ltdetr_instance_segmentation.train_model import (
+    LTDETRInstanceSegmentationTrain,
+)
+from lightly_train._task_models.ltdetr_object_detection.train_model import (
+    LTDETRObjectDetectionTrain,
 )
 from lightly_train._task_models.picodet_object_detection.train_model import (
     PicoDetObjectDetectionTrain,
@@ -87,6 +89,7 @@ from lightly_train._task_models.semantic_segmentation_multihead.train_model impo
     SemanticSegmentationMultiheadTrain,
 )
 from lightly_train._task_models.train_model import (
+    TaskStepResult,
     TrainModel,
     TrainModelArgs,
 )
@@ -123,11 +126,11 @@ TASK_TRAIN_MODEL_CLASSES: list[type[TrainModel]] = [
     DINOv3EoMTInstanceSegmentationTrain,
     DINOv3EoMTPanopticSegmentationTrain,
     DINOv2EoMTSemanticSegmentationTrain,
-    DINOv2LinearSemanticSegmentationTrain,
+    LinearSemanticSegmentationTrain,
     DINOv3EoMTSemanticSegmentationTrain,
     SemanticSegmentationMultiheadTrain,
-    DINOv2LTDETRObjectDetectionTrain,
-    DINOv3LTDETRObjectDetectionTrain,
+    LTDETRObjectDetectionTrain,
+    LTDETRInstanceSegmentationTrain,
     PicoDetObjectDetectionTrain,
 ]
 
@@ -160,6 +163,8 @@ TASK_TO_METRICS: dict[str, dict[str, str]] = {
         "val_metric/map_large": "Val mAP (large)",
     },
 }
+
+_IMAGE_EXAMPLES_DIR = "image_examples"
 
 
 def get_out_dir(
@@ -354,6 +359,7 @@ def pretty_format_args_dict(args: dict[str, Any]) -> dict[str, Any]:
 
 def get_transform_args(
     train_model_cls: type[TrainModel],
+    model_name: str,
     transform_args: dict[str, Any] | None,
     ignore_index: int | None,
     model_init_args: dict[str, Any],
@@ -381,8 +387,12 @@ def get_transform_args(
     # }
     val_args = transform_args.pop("val", {})
 
-    train_transform_args_cls = train_model_cls.train_transform_cls.transform_args_cls
-    val_transform_args_cls = train_model_cls.val_transform_cls.transform_args_cls
+    train_transform_args_cls = train_model_cls.get_train_transform_cls(
+        model_name
+    ).transform_args_cls
+    val_transform_args_cls = train_model_cls.get_val_transform_cls(
+        model_name
+    ).transform_args_cls
     train_transform_args: TaskTransformArgs
     val_transform_args: TaskTransformArgs
 
@@ -430,9 +440,12 @@ def get_transform_args(
 
 def get_train_transform(
     train_model_cls: type[TrainModel],
+    model_name: str,
     train_transform_args: TaskTransformArgs,
 ) -> TaskTransform:
-    return train_model_cls.train_transform_cls(transform_args=train_transform_args)
+    return train_model_cls.get_train_transform_cls(model_name)(
+        transform_args=train_transform_args
+    )
 
 
 def get_metric_args(
@@ -460,9 +473,12 @@ def get_metric_args(
 
 def get_val_transform(
     train_model_cls: type[TrainModel],
+    model_name: str,
     val_transform_args: TaskTransformArgs,
 ) -> TaskTransform:
-    return train_model_cls.val_transform_cls(transform_args=val_transform_args)
+    return train_model_cls.get_val_transform_cls(model_name)(
+        transform_args=val_transform_args
+    )
 
 
 def get_sha256(value: Any) -> str:
@@ -754,6 +770,8 @@ def get_train_model_args(
     model_args: dict[str, Any] | TrainModelArgs | None,
     model_args_cls: type[TrainModelArgs],
     total_steps: int,
+    gradient_accumulation_steps: int,
+    train_num_batches: int,
     model_name: str,
     model_init_args: dict[str, Any],
     data_args: TaskDataArgs,
@@ -764,6 +782,8 @@ def get_train_model_args(
     args = validate.pydantic_model_validate(model_args_cls, model_args)
     args.resolve_auto(
         total_steps=total_steps,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        train_num_batches=train_num_batches,
         model_name=model_name,
         model_init_args=model_init_args,
         data_args=data_args,
@@ -816,6 +836,7 @@ def log_step(
     global_batch_size: int,
     gradient_accumulation_steps: int = 1,
     learning_rate: float | None = None,
+    gradient_norm: float | None = None,
 ) -> None:
     split_cap = split.capitalize()
     name_to_display_name = {
@@ -840,6 +861,9 @@ def log_step(
 
     if learning_rate is not None:
         parts.append(f"lr: {learning_rate:2.8f}")
+
+    if gradient_norm is not None:
+        parts.append(f"grad_norm: {gradient_norm:4.4f}")
 
     # Add profiling information.
     profiling_parts = []
@@ -1494,3 +1518,68 @@ def get_torch_compile_args(
         train_model_cls.torch_compile_args_cls, torch_compile_args
     )
     return args
+
+
+def save_train_step_visualizations(
+    *,
+    result: TaskStepResult,
+    out_dir: Path,
+    step: int,
+    loggers: Iterable[FabricLogger],
+) -> None:
+    image = result.create_label_image()
+    _save_images_to_dir_and_loggers(
+        image=image,
+        path=_image_examples_dir(out_dir) / f"train_labels_{step}.jpg",
+        loggers=loggers,
+        key=f"train_images/labels_{step}",
+        step=step,
+    )
+
+
+def save_val_step_visualizations(
+    *,
+    result: TaskStepResult,
+    out_dir: Path,
+    val_step: int,
+    global_step: int,
+    loggers: Iterable[FabricLogger],
+) -> None:
+    viz_dir = _image_examples_dir(out_dir)
+    _save_images_to_dir_and_loggers(
+        image=result.create_prediction_image(),
+        path=viz_dir / f"val_predictions_{val_step}.jpg",
+        loggers=loggers,
+        key=f"val_images/predictions_{val_step}",
+        step=global_step,
+    )
+    label_path = viz_dir / f"val_labels_{val_step}.jpg"
+    if not label_path.exists():
+        _save_images_to_dir_and_loggers(
+            image=result.create_label_image(),
+            path=label_path,
+            loggers=loggers,
+            key=f"val_images/labels_{val_step}",
+            step=global_step,
+        )
+
+
+def _image_examples_dir(out_dir: Path) -> Path:
+    return out_dir / _IMAGE_EXAMPLES_DIR
+
+
+def _save_images_to_dir_and_loggers(
+    *,
+    image: PILImage | None,
+    path: Path,
+    loggers: Iterable[FabricLogger],
+    key: str,
+    step: int,
+) -> None:
+    if image is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    logger_helpers.log_image_to_loggers(
+        loggers=loggers, key=key, image=image, step=step
+    )

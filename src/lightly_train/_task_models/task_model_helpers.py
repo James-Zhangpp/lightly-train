@@ -9,16 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import logging
 import os
 import urllib.parse
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 import torch
 
 from lightly_train._commands import common_helpers
+from lightly_train._configs.model_registry import ModelRegistry
 from lightly_train._env import Env
+from lightly_train._task_models.dinov3_eomt_instance_segmentation.config import (
+    DINOV3_EOMT_INSTANCE_SEGMENTATION_MODEL_REGISTRY,
+)
+from lightly_train._task_models.ltdetr_object_detection.config import (
+    LTDETR_MODEL_REGISTRY,
+)
 from lightly_train._task_models.task_model import TaskModel
 from lightly_train.types import PathLike
 
@@ -30,6 +38,39 @@ DOWNLOADABLE_MODEL_BASE_URL = (
 
 LIGHTLY_TRAIN_PRETRAINED_MODEL = str
 
+_LEGACY_DINOV2_LTDETR_OBJECT_DETECTION_CLASS_PATH = (
+    "lightly_train._task_models.dinov2_ltdetr_object_detection.task_model"
+    ".DINOv2LTDETRObjectDetection"
+)
+_LEGACY_DINOV2_LTDETR_DSP_OBJECT_DETECTION_CLASS_PATH = (
+    "lightly_train._task_models.dinov2_ltdetr_object_detection.task_model"
+    ".DINOv2LTDETRDSPObjectDetection"
+)
+_LEGACY_DINOV3_LTDETR_OBJECT_DETECTION_CLASS_PATH = (
+    "lightly_train._task_models.dinov3_ltdetr_object_detection.task_model"
+    ".DINOv3LTDETRObjectDetection"
+)
+_GENERIC_LTDETR_OBJECT_DETECTION_CLASS_PATH = (
+    "lightly_train._task_models.ltdetr_object_detection.task_model"
+    ".LTDETRObjectDetection"
+)
+
+
+def _get_downloadable_model_url_and_hashes(
+    registry: ModelRegistry[Any],
+) -> dict[str, tuple[str, str]]:
+    downloadable_model_url_and_hashes = {}
+    for alias in registry.list_aliases():
+        try:
+            checkpoint = registry.get_alias_metadata(
+                alias=alias
+            ).downloadable_checkpoint
+        except KeyError:
+            continue
+        downloadable_model_url_and_hashes[alias] = (checkpoint.url, checkpoint.sha256)
+    return downloadable_model_url_and_hashes
+
+
 # How to add a new downloadable model:
 # 1. Get hash of exported model file with `sha256sum best.pt`
 # 2. Upload the exported model file to the S3 bucket and follow the naming scheme:
@@ -39,42 +80,6 @@ LIGHTLY_TRAIN_PRETRAINED_MODEL = str
 #    model name, file name, and hash.
 DOWNLOADABLE_MODEL_URL_AND_HASH: dict[str, tuple[str, str]] = {
     #### Object Detection
-    "dinov2/vits14-noreg-ltdetr-coco": (
-        "dinov2_vits14_noreg_ltdetr_coco_251218_4e1f523d.pt",
-        "4e1f523db68c94516ee5b35a91f24267657af474bea58b52a7f7e51ec2d8f717",
-    ),
-    "dinov2/vits14-ltdetr-dsp-coco": (
-        "dinov2_vits14_ltdetr_dsp_coco_251218_fa435184.pt",
-        "fa435184c775205469056f46456941ea271266ee522c656642853d061317f8ae",
-    ),
-    "dinov3/vitt16-ltdetr-coco": (
-        "dinov3_vitt16_ltdetr_coco_251218_dfd34210.pt",
-        "dfd34210a1a3375793d149a55d9b49e6e8b783458bdd4cd76fd28fa2d61dbb37",
-    ),
-    "dinov3/vitt16plus-ltdetr-coco": (
-        "dinov3_vitt16plus_ltdetr_coco_251218_af499c82.pt",
-        "af499c825436013098a77a028ff5cf08dbf31118f4d68b15eefa6fdd9635f5d2",
-    ),
-    "dinov3/vits16-ltdetr-coco": (
-        "dinov3_vits16_ltdetr_coco_251218_4812416b.pt",
-        "4812416b861a80f305889cf1408775044c8b05f1baf9be45cd4b1d0edd5d4532",
-    ),
-    "dinov3/convnext-tiny-ltdetr-coco": (
-        "dinov3_convnext_tiny_ltdetr_coco_251218_35bbc4fb.pt",
-        "35bbc4fbec3bb9fa113a33f1013abaab1952edf3335f98624b5914812d63d26c",
-    ),
-    "dinov3/convnext-small-ltdetr-coco": (
-        "dinov3_convnext_small_ltdetr_coco_251218_8f7109ab.pt",
-        "8f7109ab406aa92791e4e4ca6249ab9a863734795676c81b91dbd4cc4b1ef387",
-    ),
-    "dinov3/convnext-base-ltdetr-coco": (
-        "dinov3_convnext_base_ltdetr_coco_251218_836adb6b.pt",
-        "836adb6b5122665a24b6da3ee1720b9f3d0fc3c30cee44cfbd98dcb79fe0809a",
-    ),
-    "dinov3/convnext-large-ltdetr-coco": (
-        "dinov3_convnext_large_ltdetr_coco_251218_03fe6750.pt",
-        "03fe6750392daf3ecd32bbab3f144bd5c4d6cdc8bd75635f9e1c5e296e7dd8b0",
-    ),
     "picodet-s-coco": (
         "picodet_s_coco_416_260303_23022a45.pt",
         "23022a456b2583246288041762a1a66d8d59820d5e775912cb4eb366d3a0cd68",
@@ -82,27 +87,6 @@ DOWNLOADABLE_MODEL_URL_AND_HASH: dict[str, tuple[str, str]] = {
     "picodet-l-coco": (
         "picodet_l_coco_640_260303_b1a16990.pt",
         "b1a16990fe4f86fe60aefb2dcb4bf97ead9cc616f6c14ce4638aa2b838351fff",
-    ),
-    #### Instance Segmentation
-    "dinov3/vitt16-eomt-inst-coco": (  # 6x schedule
-        "dinov3_vitt16_eomt_inst_coco_260109_45e0aff8.pt",
-        "45e0aff8c5c8054a3240fcbc368b4e7f87e8066c1e100e3ef9d9c60c7d949a17",
-    ),
-    "dinov3/vitt16plus-eomt-inst-coco": (  # 6x schedule
-        "dinov3_vitt16plus_eomt_inst_coco_260109_0e20aa05.pt",
-        "0e20aa05ef15003d7d9462400d32ecc671e7a8d256ae061d42dd4f8978feb621",
-    ),
-    "dinov3/vits16-eomt-inst-coco": (
-        "/dinov3_eomt/dinov3_vits16_eomt_inst_coco.pt",
-        "b54dafb12d550958cc5c9818b061fba0d8b819423581d02080221d0199e1cc37",
-    ),
-    "dinov3/vitb16-eomt-inst-coco": (
-        "/dinov3_eomt/dinov3_vitb16_eomt_inst_coco.pt",
-        "a57b5e7afd5cd64422d74d400f30693f80f96fa63184960250fb0878afd3c7f6",
-    ),
-    "dinov3/vitl16-eomt-inst-coco": (
-        "/dinov3_eomt/dinov3_vitl16_eomt_inst_coco.pt",
-        "1aac5ac16dcbc1a12cc6f8d4541bea5e7940937a49f0b1dcea7394956b6e46e5",
     ),
     #### Panoptic Segmentation
     # Trained with 4x schedule (360k steps and the masking schedule of 90K steps)
@@ -197,7 +181,36 @@ DOWNLOADABLE_MODEL_URL_AND_HASH: dict[str, tuple[str, str]] = {
         "dinov3_eomt/lightlytrain_dinov3_eomt_vitl16_ade20k.pt",
         "eb31183c70edd4df8923cba54ce2eefa517ae328cf3caf0106d2795e34382f8f",
     ),
+    #### Depth Estimation
+    "dinov2/dav3-relative-large": (
+        "dinov2_dav3_relative_large_260629_9c2e9320.pt",
+        "9c2e932085843bbd960e16bc80917b6591e99fc6fd3907ded7bda68d35368e49",
+    ),
+    "dinov2/dav3-metric-large": (
+        "dinov2_dav3_metric_large_260629_6fd208f2.pt",
+        "6fd208f22eaccf9007e9e67fb9cad95cc47016c8d00bc74c7fe69ec34185c06b",
+    ),
+    # Only the Apache-2.0 Depth Anything V2 models are hosted. The CC-BY-NC-4.0 models
+    # (relative base/large and the non-small metric variants) are not redistributed:
+    # convert them locally with convert_checkpoint_dav2 and pass the result via
+    # `weights=`.
+    "dinov2/dav2-relative-small": (
+        "dinov2_dav2_relative_small_260629_bb09402a.pt",
+        "bb09402aca18dab407707254967b7a1b3cec3dc3707777697ce6101db15d6172",
+    ),
+    "dinov2/dav2-metric-small-hypersim": (
+        "dinov2_dav2_metric_small_hypersim_260629_d5957701.pt",
+        "d59577016e01635c285fac76f44685d7a0878545e0b8d560da45c0cf4d058548",
+    ),
 }
+DOWNLOADABLE_MODEL_URL_AND_HASH.update(
+    _get_downloadable_model_url_and_hashes(
+        DINOV3_EOMT_INSTANCE_SEGMENTATION_MODEL_REGISTRY
+    )
+)
+DOWNLOADABLE_MODEL_URL_AND_HASH.update(
+    _get_downloadable_model_url_and_hashes(LTDETR_MODEL_REGISTRY)
+)
 
 
 def load_model(
@@ -282,7 +295,7 @@ def download_checkpoint(checkpoint: PathLike) -> Path:
                 f"{checkpoint_hash(local_ckpt_path)}"
             )
     else:
-        raise ValueError(f"Unknown model name or checkpoint path: '{checkpoint}'")
+        _raise_unknown_checkpoint_error(checkpoint=checkpoint)
     return local_ckpt_path
 
 
@@ -290,12 +303,33 @@ def init_model_from_checkpoint(
     checkpoint: dict[str, Any],
     device: Literal["cpu", "cuda", "mps"] | torch.device | None = None,
 ) -> TaskModel:
-    # Import the model class dynamically
-    module_path, class_name = checkpoint["model_class_path"].rsplit(".", 1)
+    # Import the model class dynamically. Legacy DINOv2 LT-DETR checkpoints are
+    # loaded through the generic LT-DETR implementation after the package deletion.
+    model_class_path = checkpoint["model_class_path"]
+    if model_class_path == _LEGACY_DINOV2_LTDETR_OBJECT_DETECTION_CLASS_PATH:
+        model_class_path = _GENERIC_LTDETR_OBJECT_DETECTION_CLASS_PATH
+    elif model_class_path == _LEGACY_DINOV2_LTDETR_DSP_OBJECT_DETECTION_CLASS_PATH:
+        raise ValueError(
+            "DINOv2 LT-DETR DSP checkpoints are not supported by the generic "
+            "LT-DETR object detection model."
+        )
+    elif model_class_path == _LEGACY_DINOV3_LTDETR_OBJECT_DETECTION_CLASS_PATH:
+        model_class_path = _GENERIC_LTDETR_OBJECT_DETECTION_CLASS_PATH
+    module_path, class_name = model_class_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     model_class = getattr(module, class_name)
     model_init_args = checkpoint["model_init_args"]
     model_init_args["load_weights"] = False
+
+    # Backward compat: This is similar to the fix in dinov3_ltdetr_object_detection/train_model.py:210–226
+    # and should be fixed together
+    # TODO(TRN-2243): Replace this compatibility shim with separate
+    # LTDETRv2/LTDETRv3 taskmodel args classes once the config split lands.
+    if (
+        "decoder_name" not in model_init_args
+        and "decoder_name" in inspect.signature(model_class.__init__).parameters
+    ):
+        model_init_args["decoder_name"] = "rtdetrv2"
 
     # Create model instance
     model: TaskModel = model_class(**model_init_args)
@@ -311,6 +345,44 @@ def checkpoint_hash(path: Path) -> str:
         while block := f.read(4096):
             sha256_hash.update(block)
     return sha256_hash.hexdigest().lower()
+
+
+def _raise_unknown_checkpoint_error(checkpoint: PathLike) -> NoReturn:
+    """Raises a helpful error for an unknown model name or checkpoint path.
+
+    Non-hosted Depth Anything V2 models are recognized but not redistributed; for those
+    a verbose message points to the local converter. Everything else raises the generic
+    error.
+    """
+    # Imported lazily: this module imports `task_model_helpers` at module level, so a
+    # top-level import here would be circular. This runs only on the error path.
+    from lightly_train._task_models.depth_estimation.task_model import (
+        DepthAnythingDepthEstimation,
+    )
+
+    ckpt_str = str(checkpoint)
+    # The depth task model's registry is the source of truth for known names. Hosted
+    # DAv2 models are matched earlier against DOWNLOADABLE_MODEL_URL_AND_HASH, so a known
+    # DAv2 name reaching here is a non-commercial variant that must be converted locally.
+    # Filter to DAv2 names: the registry now also holds DAv3 names, which must not trigger
+    # the DAv2 non-commercial message.
+    dav2_model_names = {
+        name.lower()
+        for name in DepthAnythingDepthEstimation.list_model_names()
+        if "dav2" in name.lower()
+    }
+    if ckpt_str.lower() in dav2_model_names:
+        raise ValueError(
+            f"'{ckpt_str}' is a Depth Anything V2 model with a non-commercial license, "
+            "which LightlyTrain does not host. Make sure you understand its license "
+            "and how it applies to your use, then convert it locally and load the "
+            "checkpoint by its path:\n"
+            "  python -m lightly_train._task_models.depth_estimation_components"
+            f".convert_checkpoint_dav2 --model-name {ckpt_str} --out <converted.pt>\n"
+            "The converter reports the license and which official weights to download. "
+            'Then call lightly_train.load_model("<converted.pt>").'
+        )
+    raise ValueError(f"Unknown model name or checkpoint path: '{checkpoint}'")
 
 
 def _resolve_device(device: str | torch.device | None) -> torch.device:

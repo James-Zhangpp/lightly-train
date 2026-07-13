@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import torch
 from lightning_utilities.core.imports import RequirementCache
+from pytest_mock import MockerFixture
 
 from lightly_train._task_models.dinov2_eomt_instance_segmentation.task_model import (
     DINOv2EoMTInstanceSegmentation,
@@ -28,6 +30,64 @@ def model() -> DINOv2EoMTInstanceSegmentation:
         num_joint_blocks=1,
         load_weights=False,
     )
+
+
+def test_list_model_names__uses_registry() -> None:
+    names = DINOv2EoMTInstanceSegmentation.list_model_names()
+
+    assert "dinov2/_vittest14-eomt" in names
+    assert "dinov2/vits14-eomt" in names
+    assert "dinov2/vits14-notpretrained-eomt" in names
+
+
+def test_is_supported_model__uses_registry() -> None:
+    assert DINOv2EoMTInstanceSegmentation.is_supported_model("dinov2/vits14-eomt")
+    assert DINOv2EoMTInstanceSegmentation.is_supported_model(
+        "dinov2/vits14-notpretrained-eomt"
+    )
+    assert not DINOv2EoMTInstanceSegmentation.is_supported_model(
+        "dinov2/vits14_pretrain-eomt"
+    )
+
+    parsed = DINOv2EoMTInstanceSegmentation._resolve_model_name("dinov2/vits14-eomt")
+    assert parsed == {
+        "model_name": "dinov2/vits14-eomt",
+        "backbone_name": "vits14",
+    }
+
+
+def test_predict_batch__composes_stages_in_order(
+    model: DINOv2EoMTInstanceSegmentation, mocker: MockerFixture
+) -> None:
+    preprocess_image_spy = mocker.spy(model, "preprocess_image")
+    preprocess_batch_spy = mocker.spy(model, "preprocess_batch")
+    forward_backend_spy = mocker.spy(model, "forward_backend")
+    postprocess_spy = mocker.spy(model, "postprocess")
+
+    images = [torch.rand(3, 24, 32), torch.rand(3, 40, 24)]
+    result = model.predict_batch(images=images)
+
+    # Each input image goes through preprocess_image once.
+    assert preprocess_image_spy.call_count == 2
+
+    # The stacked batch is preprocessed in a single call with shape (B, C, H, W).
+    assert preprocess_batch_spy.call_count == 1
+    (batch_in,) = preprocess_batch_spy.call_args.args
+    assert batch_in.shape == (2, 3, 14, 14)
+
+    # forward_backend receives the output of preprocess_batch.
+    assert forward_backend_spy.call_count == 1
+    (forward_in,) = forward_backend_spy.call_args.args
+    assert forward_in is preprocess_batch_spy.spy_return
+
+    # postprocess receives forward_backend's output and per-image metadata.
+    assert postprocess_spy.call_count == 1
+    raw_in, metadata = postprocess_spy.call_args.args
+    assert raw_in is forward_backend_spy.spy_return
+    assert len(metadata) == 2
+
+    # predict_batch returns whatever postprocess produced.
+    assert result is postprocess_spy.spy_return
 
 
 @pytest.mark.skipif(not RequirementCache("onnx"), reason="onnx not installed")
