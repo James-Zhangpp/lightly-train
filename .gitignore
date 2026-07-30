@@ -282,3 +282,8 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,windows,linux,python
 DataSet
+/tools/FPC_Line4_seg/
+/tools/Breakage_small_seg_1024x416/
+/tools/brasn_seg/
+/tools/Breakage_small_seg/
+/tools/FPC_Line12_Seg/
