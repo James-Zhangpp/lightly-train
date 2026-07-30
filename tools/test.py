@@ -29,17 +29,17 @@ from PIL import Image, ImageDraw, ImageFont
 # 路径（与 tools/train.py / tools/toOnnx.py 实验目录一致）
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EXPERIMENT = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_v2"
+DEFAULT_EXPERIMENT = PROJECT_ROOT / "out" / "FPC_Line4_seg_vitb16_eupe_eomt"
 # embedded 默认产物名（toOnnx.py 在未指定 --out 时生成）
 DEFAULT_ONNX = DEFAULT_EXPERIMENT / "exported_models" / "model_with_preprocessing.onnx"
 # official 模式请改用：.../lightly_float32.onnx 或自行 --onnx 指定
 
 # 本机默认输入/输出目录（可按环境修改）
-DEFAULT_IMAGE = Path(r"C:\Users\ASUS\Desktop\DL 5\原图")
-DEFAULT_OUT_DIR = Path(r"C:\Users\ASUS\Desktop\DL 5\onnxtest")
+DEFAULT_IMAGE = Path(r"C:\Users\ASUS\Desktop\LINE4\原图")
+DEFAULT_OUT_DIR = Path(r"C:\Users\ASUS\Desktop\LINE4\test")
 
 # 现场 ROI：(x, y, width, height)，再 resize 到 --size；默认与训练视野一致时可改
-CROP_ROI: tuple[int, int, int, int] = (900, 700, 768, 768)
+CROP_ROI: tuple[int, int, int, int] = (650, 600, 1024, 1024)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 

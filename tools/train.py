@@ -1,58 +1,101 @@
-"""焊接语义分割训练脚本（DINOv3 + EoMT）。
+"""焊接语义分割训练脚本（DINOv3 + EoMT · 动态参数版）。
 
-数据目录结构见 tools/weldingseg-data/：
-  img_dir/{train,val}  原图
-  ann_dir/{train,val}  掩码（类别 id：0=background, 1=fpc）
-
-训练产物：
-  out/.../exported_models/exported_best.pt  验证 mIoU 最高
-  out/.../exported_models/exported_last.pt   最后一次保存
-  out/.../checkpoints/last.ckpt              中断续训用（需 resume_interrupted=True）
-
-默认超参来源：lightly_train DINOv3EoMTSemanticSegmentation（见库内 train_model.py / transforms.py）。
-本脚本未写的项使用框架默认值；下方注释中的「默认」均指框架默认，非本文件当前取值。
+已重构为全动态自适应模式，支持命令行传参、自动统计图片数量并计算 Steps。
 """
 
 import os
+import glob
+import argparse
+from pathlib import Path
 
 # 抑制 TensorFlow oneDNN 提示（TensorBoard 等间接依赖可能拉起 TF）
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-from pathlib import Path
-
 import lightly_train
 
-# ---------------------------------------------------------------------------
-# 路径
-# ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_ROOT = Path(__file__).resolve().parent / "weldingseg-data"
-#OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_v2"
-OUT_DIR = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eupe_eomt_v2"
-EXPORTED_BEST = OUT_DIR / "exported_models" / "exported_best.pt"
+def parse_args():
+    parser = argparse.ArgumentParser(description="工业视觉语义分割自适应训练脚本")
+    
+    # 核心可调参数
+    parser.add_argument("--model", type=str, default="dinov3/vitb16-eupe-eomt", help="模型架构名称")
+    parser.add_argument("--data-dir", type=str, default="FPC_Line4_seg", help="数据集目录名称（需放在 tools 目录下）")
+    parser.add_argument("--batch-size", type=int, default=4, help="全局 batch size (大模型 86M 建议 4~8)")
+    parser.add_argument("--size", type=int, default=512, help="训练与裁剪图像的目标尺寸 (默认 512)")
+    parser.add_argument("--epochs", type=int, default=60, help="首轮 Scratch 目标训练 Epoch 数 (默认 60)")
+    parser.add_argument("--mode", type=str, default="scratch", choices=["scratch", "finetune", "resume"], 
+                        help="训练模式: scratch(从头训练), finetune(微调), resume(断点续训)")
+    
+    return parser.parse_args()
 
-# ---------------------------------------------------------------------------
-# 训练阶段切换（根据是否存在 exported_best 自动选择）
-# ---------------------------------------------------------------------------
-# 续训模式说明：
-#   - 从 best 微调（亮/暗增强等）：resume_interrupted=False，checkpoint=exported_best.pt
-#   - 崩溃续跑（需 last.ckpt）：resume_interrupted=True，checkpoint=None
-#
-# 若存在 exported_best：5000 step 微调（约 40 epoch，按 batch=10、1271 张训练图估算）
-# 否则：20000 step 全量训练（约 157 epoch）
-FINE_TUNE_FROM_BEST = EXPORTED_BEST.is_file()
-STEPS = 5000 if FINE_TUNE_FROM_BEST else 20000
-# 默认 lr_warmup_steps=(500, 1000)；微调时按 step 数缩短
-LR_WARMUP = (125, 250) if FINE_TUNE_FROM_BEST else (250, 500)
+def main():
+    args = parse_args()
+    
+    # ---------------------------------------------------------------------------
+    # 1. 路径自动解析与生成
+    # ---------------------------------------------------------------------------
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    DATA_ROOT = Path(__file__).resolve().parent / args.data_dir
+    
+    # 动态生成输出目录 (例如: out/FPC_Line12_Seg_vitb16_eupe_eomt)
+    model_suffix = args.model.split('/')[-1].replace('-', '_')
+    OUT_DIR = PROJECT_ROOT / "out" / f"{args.data_dir}_{model_suffix}"
+    EXPORTED_BEST = OUT_DIR / "exported_models" / "exported_best.pt"
+    
+    # ---------------------------------------------------------------------------
+    # 2. 训练模式控制
+    # ---------------------------------------------------------------------------
+    TRAIN_MODE = args.mode.lower()
+    FINE_TUNE_FROM_BEST = (TRAIN_MODE == "finetune") and EXPORTED_BEST.is_file()
+    RESUME_INTERRUPTED = (TRAIN_MODE == "resume")
+    
+    # ---------------------------------------------------------------------------
+    # 3. 动态扫描数据集并计算计算 Steps / Warmup
+    # ---------------------------------------------------------------------------
+    train_img_dir = DATA_ROOT / "img_dir" / "train"
+    train_images = glob.glob(str(train_img_dir / "*.*"))
+    num_images = len([f for f in train_images if Path(f).is_file()])
+    
+    if num_images == 0:
+        raise ValueError(f"❌ 找不到训练图片！请检查路径: {train_img_dir}")
+        
+    steps_per_epoch = max(1, num_images / args.batch_size)
+    
+    # 微调时缩短 Epoch
+    target_epochs = 20 if FINE_TUNE_FROM_BEST else args.epochs
+    STEPS = int(steps_per_epoch * target_epochs)
+    
+    # 动态计算热身步数 (设定预热期约占总 Epoch 的 5%~10%)
+    warmup_epochs = max(1, int(target_epochs * 0.08)) 
+    warmup_steps_start = int(warmup_epochs * 0.5 * steps_per_epoch)
+    warmup_steps_end = int(warmup_epochs * 2.0 * steps_per_epoch)
+    LR_WARMUP = (max(10, warmup_steps_start), max(20, warmup_steps_end))
+    
+    LR = 3e-5 if FINE_TUNE_FROM_BEST else 6e-5
+    
+    # 动态计算验证/保存频率 (每 2 个 Epoch 执行一次)
+    val_interval = max(50, int(steps_per_epoch * 2.0))
 
-if __name__ == "__main__":
+    # ---------------------------------------------------------------------------
+    # 4. 打印当前任务配置面板
+    # ---------------------------------------------------------------------------
+    print("=" * 60)
+    print(f"🚀 开始动态自适应训练")
+    print(f"📦 数据集:   {args.data_dir} (共找到 {num_images} 张样本)")
+    print(f"🤖 模型:     {args.model}")
+    print(f"📏 图像尺寸: {args.size} x {args.size}")
+    print(f"🧮 训练模式: {TRAIN_MODE.upper()} | Batch: {args.batch_size}")
+    print(f"⏱️ 训练跨度: {steps_per_epoch:.1f} steps/epoch * {target_epochs} epochs = 核心执行 {STEPS} 步")
+    print(f"🔥 热身区间: {LR_WARMUP} steps | 每 {val_interval} 步验证一次")
+    print(f"📂 输出目录: {OUT_DIR}")
+    print("=" * 60)
+
+    # ---------------------------------------------------------------------------
+    # 5. 启动底层训练框架
+    # ---------------------------------------------------------------------------
     lightly_train.train_semantic_segmentation(
-        # 实验输出目录；默认无，必填
         out=OUT_DIR,
-        # 预训练骨干；例如 dinov3/vits16-eomt，无单独默认值
-        # model="dinov3/vits16-eomt",
-        model="dinov3/vits16-eupe-eomt",
+        model=args.model,
         data={
             "train": {
                 "images": DATA_ROOT / "img_dir" / "train",
@@ -67,104 +110,92 @@ if __name__ == "__main__":
                 1: "fpc",
             },
         },
-        # 训练步数。默认 "auto" -> 40000（dinov3 语义分割）
-        # 本脚本：有 best 则 5000，否则 20000
         steps=STEPS,
-        # 全局 batch。默认 "auto" -> 16（每卡 batch 由 GPU 数量自动分摊）
-        batch_size=10,
-        # DataLoader 进程数/卡。默认 "auto"（按 CPU 核数）
-        num_workers=6,
-        # GPU 数量。默认 "auto"（用全部可见 GPU）
+        batch_size=args.batch_size,
+        num_workers=2,
         devices="auto",
-        # 加速器。默认 "auto"（有 GPU 用 cuda）
         accelerator="auto",
-        # 分布式策略。默认 "auto"
         strategy="auto",
-        # 混合精度。默认 "bf16-mixed"
         precision="bf16-mixed",
-        # float32 矩阵乘精度。默认 "auto"
-        float32_matmul_precision="auto",
-        # 多机节点数。默认 1
+        float32_matmul_precision="high",
         num_nodes=1,
-        # 随机种子。默认 0
         seed=42,
-        # 是否清空 out。默认 False；从 best 微调时改为 False 以免覆盖日志
-        overwrite=not FINE_TUNE_FROM_BEST,
-        # 从 checkpoints/last.ckpt 恢复完整训练状态。默认 False
-        resume_interrupted=False,
-        # 仅加载权重继续训（非 last.ckpt）。默认 None
+        overwrite=(not FINE_TUNE_FROM_BEST) and (not RESUME_INTERRUPTED),
+        resume_interrupted=RESUME_INTERRUPTED,
         checkpoint=EXPORTED_BEST if FINE_TUNE_FROM_BEST else None,
+        
         model_args={
-            # 学习率。默认 1e-4；微调亮/暗鲁棒性时常用 5e-5
-            "lr": 5e-5,
-            # 权重衰减。默认 0.05
-            "weight_decay": 0.01,
-            # EoMT query 数量。默认 "auto" -> 100；二分类小目标可改为 50
-            "num_queries": 50,
-            # (非 ViT warmup, ViT warmup) 步数。默认 (500, 1000)
+            "lr": LR,
+            "llrd": 0.72,
+            "weight_decay": 0.08,
+            "num_queries": 18,
             "lr_warmup_steps": LR_WARMUP,
+            "fix_num_upscale_blocks": False,
+            "loss_num_points": 16384,
+            "loss_oversample_ratio": 3.0,
+            "loss_importance_sample_ratio": 0.85,
+            "loss_class_coefficient": 3.0,
+            "loss_mask_coefficient": 6.0,
+            "loss_dice_coefficient": 12.0,
+            "loss_no_object_coefficient": 0.05,
         },
+        
         transform_args={
-            # 训练裁剪/缩放目标尺寸。默认 "auto" -> 与模型 image_size 一致，通常 (512,512)
-            "image_size": (512, 512),
-            # 输入通道数。默认 "auto" -> 3
+            "image_size": (args.size, args.size),
             "num_channels": 3,
-            # 颜色扰动（仅训练）。默认：prob=0.5, strength=1.0,
-            #   brightness=32/255, contrast=0.5, saturation=0.5, hue=18/360
-            # 下列为加强版，缓解现场过亮/过暗与训练集曝光不一致
             "color_jitter": {
-                "prob": 0.8,  # 默认 0.5：做扰动的概率
-                "strength": 1.5,  # 默认 1.0：下面四项的整体倍率
-                "brightness": 64.0 / 255.0,  # 默认 32/255：亮度随机幅度
-                "contrast": 0.8,  # 默认 0.5：对比度
-                "saturation": 0.5,  # 默认 0.5：饱和度
-                "hue": 18.0 / 360.0,  # 默认 18/360：色调（弧度）
+                "prob": 0.5,
+                "strength": 0.8,
+                "brightness": 15.0 / 255.0,
+                "contrast": 0.15,
+                "saturation": 0.2,
+                "hue": 6.0 / 360.0,
             },
-            # 随机缩放后再 crop。默认：min=0.5, max=2.0, num_scales=20, prob=1.0
             "scale_jitter": {
-                "sizes": None,  # 默认 None：用 min/max_scale 生成尺度列表
-                "min_scale": 0.75,  # 默认 0.5：相对 image_size 最小缩放
-                "max_scale": 1.25,  # 默认 2.0：最大缩放
-                "num_scales": 10,  # 默认 20：在 [min,max] 间均匀取几个尺度
-                "prob": 1.0,  # 默认 1.0：执行概率
-                "divisible_by": None,  # 默认 None；当前实现未使用
+                "sizes": None,
+                "min_scale": 0.88,
+                "max_scale": 1.12,
+                "num_scales": 20,
+                "prob": 0.6,
+                "divisible_by": None,
             },
-            # 随机裁 512x512。默认：height/width=auto, pad_if_needed=True,
-            #   pad_position="center", fill=0, prob=1.0
             "random_crop": {
-                "height": 512,
-                "width": 512,
+                "height": args.size,
+                "width": args.size,
                 "pad_if_needed": True,
-                "pad_position": "center",
+                # 💡 极度关键：强力平移干扰，打乱绝对坐标，防止位置过拟合引起的偶尔飞框
+                "pad_position": "random",  
                 "fill": 0,
                 "prob": 1.0,
             },
-            # 随机翻转。默认：horizontal_prob=0.5, vertical_prob=0.0
             "random_flip": {
                 "horizontal_prob": 0.5,
-                "vertical_prob": 0.0,
+                "vertical_prob": 0.5,
             },
-            # 小角度旋转。默认：未启用（None）；启用时常见 prob=0.2, degrees=10
-            "random_rotate": {
-                "prob": 0.2,
-                "degrees": 10,
+            "random_rotate_90": {
+                "prob": 0.75,
             },
-            # ImageNet 归一化（与推理/ONNX 一致）。默认即 ImageNet mean/std
+            "random_rotate": None,
             "normalize": {
                 "mean": (0.485, 0.456, 0.406),
                 "std": (0.229, 0.224, 0.225),
             },
         },
-        # DataLoader 额外参数。默认 None
+        
         loader_args=None,
-        # TensorBoard 等日志。默认 None（使用内置默认）
-        logger_args=None,
+        logger_args={
+            "val_every_num_steps": val_interval,  # 动态计算验证频率
+        },
+        metric_args={
+            "classwise": True,
+            "watch_metric": "val_metric/miou",
+        },
         save_checkpoint_args={
-            # 每隔多少 step 存一次中间 ckpt。默认 1000
-            "save_every_num_steps": 1000,
-            # 是否保存 last。默认 True
+            "save_every_num_steps": val_interval,
             "save_last": True,
-            # 是否按验证 mIoU 保存 best。默认 True
             "save_best": True,
         },
     )
+
+if __name__ == "__main__":
+    main()

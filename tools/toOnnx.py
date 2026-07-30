@@ -29,7 +29,7 @@ import torch.nn as nn
 # 路径（与 tools/train.py OUT_DIR 一致）
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EXPERIMENT = PROJECT_ROOT / "out" / "welding_dinov3_vits16_eomt_v2"
+DEFAULT_EXPERIMENT = PROJECT_ROOT / "out" / "FPC_Line4_seg_vitb16_eupe_eomt"
 # 默认导出 embedded 时常用 last；也可改为 exported_best.pt
 DEFAULT_CHECKPOINT = DEFAULT_EXPERIMENT / "exported_models" / "exported_best.pt"
 
