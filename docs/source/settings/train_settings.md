@@ -68,7 +68,8 @@ segmentation, etc.) has different dataset requirements. Refer to the task docume
 for details on the expected dataset structure and configuration options.
 
 - [Object Detection](object-detection-data)
-- [Instance Segmentation](instance-segmentation-data)
+- Instance Segmentation: [LTDETRv2](instance-segmentation-ltdetrv2-data),
+  [EoMT](instance-segmentation-eomt-data)
 - [Panoptic Segmentation](panoptic-segmentation-data)
 - [Semantic Segmentation](semantic-segmentation-data)
 
@@ -103,14 +104,13 @@ restored correctly.
 Dictionary with model-specific training parameters. The available keys vary by
 architecture. The table lists the most commonly tuned options:
 
-| Key                                             | Type                      | Description                         |
-| ----------------------------------------------- | ------------------------- | ----------------------------------- |
-| [`lr`](#lr)                                     | `float`                   | Base learning rate.                 |
-| [`backbone_weights`](#backbone_weights)         | `Path`<br>`str`<br>`None` | Path to backbone weights to load.   |
-| [`metric_log_classwise`](#metric_log_classwise) | `bool`                    | Whether to log class-wise metrics.  |
-| [`scheduler_name`](#scheduler_name)             | `str`                     | Scheduler mode for LTDETR training. |
-| `scheduler_flat_steps`                          | `int`<br>`"auto"`         | Flat-cosine flat phase boundary.    |
-| `scheduler_no_aug_steps`                        | `int`<br>`"auto"`         | Flat-cosine final tail length.      |
+| Key                                     | Type                      | Description                         |
+| --------------------------------------- | ------------------------- | ----------------------------------- |
+| [`lr`](#lr)                             | `float`                   | Base learning rate.                 |
+| [`backbone_weights`](#backbone_weights) | `Path`<br>`str`<br>`None` | Path to backbone weights to load.   |
+| [`scheduler_name`](#scheduler_name)     | `str`                     | Scheduler mode for LTDETR training. |
+| `scheduler_flat_steps`                  | `int`<br>`"auto"`         | Flat-cosine flat phase boundary.    |
+| `scheduler_no_aug_steps`                | `int`<br>`"auto"`         | Flat-cosine final tail length.      |
 
 #### `lr`
 
@@ -182,21 +182,9 @@ lightly_train.train_object_detection(
 The backbone weights are only loaded when training starts from scratch using a model
 identifier without a dataset suffix (e.g. `-coco`, `-cityscapes`, etc.).
 
-#### `metric_log_classwise`
-
-If set to `True`, class-wise metrics (for example AP per class) are logged during
-validation. Default is `False` to reduce logging overhead. Not all models support this
-feature.
-
-```python
-import lightly_train
-
-lightly_train.train_object_detection(
-    ...,
-    model_args={
-        "metric_log_classwise": True,
-    },
-)
+```{note}
+To log per-class metrics (for example AP or IoU per class), use the
+[`classwise`](#classwise) key of [`metric_args`](#metric_args).
 ```
 
 #### `scheduler_name`
@@ -640,7 +628,8 @@ customized parameters are listed in the table below:
 Check the respective task pages for the default transforms applied:
 
 - [Object Detection](object-detection-transform-args)
-- [Instance Segmentation](instance-segmentation-transform-args)
+- Instance Segmentation: [LTDETRv2](instance-segmentation-ltdetrv2-transform-args),
+  [EoMT](instance-segmentation-eomt-transform-args)
 - [Panoptic Segmentation](panoptic-segmentation-transform-args)
 - [Semantic Segmentation](semantic-segmentation-transform-args)
 

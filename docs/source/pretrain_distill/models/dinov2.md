@@ -54,7 +54,8 @@ instructions and example code:
   supports loading custom pretrained backbone weights via `backbone_weights`.
 - [Semantic Segmentation](#semantic-segmentation) — fine-tune a DINOv2-based EoMT model;
   supports loading custom pretrained backbone weights via `backbone_weights`.
-- [Instance Segmentation](#instance-segmentation) — fine-tune a DINOv2-based EoMT model.
+- [Instance Segmentation](#instance-segmentation-eomt) — fine-tune a DINOv2-based EoMT
+  model.
 - [Panoptic Segmentation](#panoptic-segmentation) — fine-tune a DINOv2-based EoMT model.
 - [Image Classification](#image-classification) — fine-tune a DINOv2 backbone for
   classification.
@@ -82,3 +83,14 @@ starting from Meta's weights.
 - `dinov2/vitb14-notpretrained`
 - `dinov2/vitl14-notpretrained`
 - `dinov2/vitg14-notpretrained`
+
+### TIPSv2 Vision Backbones
+
+[TIPSv2](https://github.com/google-deepmind/tips) vision backbones are available for
+embedding, fine-tuning, and generic DINOv2 continuation. TIPSv2 text and zero-shot
+interfaces are not included.
+
+- `dinov2/vitb14-tipsv2`
+- `dinov2/vitl14-tipsv2`
+- `dinov2/vitso400m14-tipsv2`
+- `dinov2/vitg14-tipsv2`

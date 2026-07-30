@@ -247,6 +247,7 @@ class LTDETRObjectDetectionTrainTransformArgs(LTDETRObjectDetectionTransformArgs
         ),
     )
     normalize: NormalizeArgs | Literal["auto"] | None = "auto"
+    min_bbox_size_px: float = 4.0
 
     def resolve_auto(self, model_init_args: dict[str, Any]) -> None:
         super().resolve_auto(model_init_args=model_init_args)
@@ -397,6 +398,33 @@ class LTDETRObjectDetectionTrainTransform(LTDETRObjectDetectionTransform):
 
 class LTDETRObjectDetectionValTransform(LTDETRObjectDetectionTransform):
     transform_args_cls = LTDETRObjectDetectionValTransformArgs
+
+
+class LTDETRv2ObjectDetectionMixUpArgs(LTDETRObjectDetectionMixUpArgs):
+    # ltdetrv2 (EdgeCrafter) benchmark recipe uses a higher mixup prob than the
+    # shared LTDETR default.
+    prob: float = 0.75
+
+
+class LTDETRv2ObjectDetectionMosaicArgs(LTDETRObjectDetectionMosaicArgs):
+    # ltdetrv2 (EdgeCrafter) benchmark recipe uses a higher mosaic prob than the
+    # shared LTDETR default.
+    prob: float = 0.75
+
+
+class LTDETRv2ObjectDetectionTrainTransformArgs(
+    LTDETRObjectDetectionTrainTransformArgs
+):
+    mosaic: LTDETRv2ObjectDetectionMosaicArgs | None = Field(
+        default_factory=LTDETRv2ObjectDetectionMosaicArgs
+    )
+    mixup: LTDETRv2ObjectDetectionMixUpArgs | None = Field(
+        default_factory=LTDETRv2ObjectDetectionMixUpArgs
+    )
+
+
+class LTDETRv2ObjectDetectionTrainTransform(LTDETRObjectDetectionTransform):
+    transform_args_cls = LTDETRv2ObjectDetectionTrainTransformArgs
 
 
 # TODO (Lionel, 06/26): Remove all the `v2` naming once the DINOv2 LT-DETR models are
@@ -614,6 +642,7 @@ class DINOv2LTDETRObjectDetectionTrainTransformArgsV2(
         ),
     )
     normalize: NormalizeArgs | Literal["auto"] | None = "auto"
+    min_bbox_size_px: float = 4.0
 
     def resolve_auto(self, model_init_args: dict[str, Any]) -> None:
         super().resolve_auto(model_init_args=model_init_args)

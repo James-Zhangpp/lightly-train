@@ -20,11 +20,23 @@ from lightly_train._task_models import task_model_helpers
 from lightly_train._task_models.dinov3_eomt_instance_segmentation.config import (
     DINOV3_EOMT_INSTANCE_SEGMENTATION_MODEL_REGISTRY,
 )
+from lightly_train._task_models.dinov3_eomt_semantic_segmentation.config import (
+    DINOV3_EOMT_SEMANTIC_SEGMENTATION_MODEL_REGISTRY,
+)
 from lightly_train._task_models.dinov3_eomt_semantic_segmentation.task_model import (
     DINOv3EoMTSemanticSegmentation,
 )
+from lightly_train._task_models.ltdetr_instance_segmentation.config import (
+    LTDETR_SEG_MODEL_REGISTRY,
+)
 from lightly_train._task_models.ltdetr_object_detection.task_model import (
     LTDETRObjectDetection,
+)
+from lightly_train._task_models.object_detection_components.rtdetrv2_decoder import (
+    RTDETRTransformerv2,
+)
+from lightly_train._task_models.picodet_object_detection.config import (
+    PICODET_OBJECT_DETECTION_MODEL_REGISTRY,
 )
 
 
@@ -76,6 +88,25 @@ def test_downloadable_model__ltdetrv2_s_coco_alias() -> None:
     assert d["ltdetrv2-s-coco"] == d["edgecrafter/ecvitt-ltdetr-coco"]
 
 
+def test_downloadable_model__dinov3_eomt_semantic_aliases_from_registry() -> None:
+    aliases = [
+        "dinov3/vits16-eomt-coco",
+        "dinov3/vits32-eomt-coco",
+        "dinov3/vitl16-eomt-ade20k",
+    ]
+
+    for alias in aliases:
+        checkpoint = (
+            DINOV3_EOMT_SEMANTIC_SEGMENTATION_MODEL_REGISTRY.get_alias_metadata(
+                alias
+            ).downloadable_checkpoint
+        )
+        assert task_model_helpers.DOWNLOADABLE_MODEL_URL_AND_HASH[alias] == (
+            checkpoint.url,
+            checkpoint.sha256,
+        )
+
+
 def test_downloadable_model__dinov3_eomt_instance_aliases_from_registry() -> None:
     aliases = [
         "dinov3/vitt16-eomt-inst-coco",
@@ -91,6 +122,52 @@ def test_downloadable_model__dinov3_eomt_instance_aliases_from_registry() -> Non
                 alias
             ).downloadable_checkpoint
         )
+        assert task_model_helpers.DOWNLOADABLE_MODEL_URL_AND_HASH[alias] == (
+            checkpoint.url,
+            checkpoint.sha256,
+        )
+
+
+def test_downloadable_model__ltdetr_seg_aliases_from_registry() -> None:
+    aliases = [
+        "ltdetrv2-seg-s-coco",
+        "ltdetrv2-seg-m-coco",
+        "ltdetrv2-seg-l-coco",
+        "ltdetrv2-seg-x-coco",
+        "edgecrafter/ecvitt-ltdetr-seg-coco",
+        "edgecrafter/ecvittplus-ltdetr-seg-coco",
+        "edgecrafter/ecvits-ltdetr-seg-coco",
+        "edgecrafter/ecvitsplus-ltdetr-seg-coco",
+    ]
+
+    for alias in aliases:
+        checkpoint = LTDETR_SEG_MODEL_REGISTRY.get_alias_metadata(
+            alias
+        ).downloadable_checkpoint
+        assert task_model_helpers.DOWNLOADABLE_MODEL_URL_AND_HASH[alias] == (
+            checkpoint.url,
+            checkpoint.sha256,
+        )
+
+
+def test_downloadable_model__ltdetr_seg_coco_short_and_full_aliases_match() -> None:
+    # The ``ltdetrv2-seg-<size>-coco`` short names and the ``edgecrafter/...-seg-coco``
+    # full names must resolve to the same hosted (file, hash) so downloads are
+    # identical regardless of which name the user passes.
+    d = task_model_helpers.DOWNLOADABLE_MODEL_URL_AND_HASH
+    assert d["ltdetrv2-seg-s-coco"] == d["edgecrafter/ecvitt-ltdetr-seg-coco"]
+    assert d["ltdetrv2-seg-m-coco"] == d["edgecrafter/ecvittplus-ltdetr-seg-coco"]
+    assert d["ltdetrv2-seg-l-coco"] == d["edgecrafter/ecvits-ltdetr-seg-coco"]
+    assert d["ltdetrv2-seg-x-coco"] == d["edgecrafter/ecvitsplus-ltdetr-seg-coco"]
+
+
+def test_downloadable_model__picodet_aliases_from_registry() -> None:
+    aliases = ["picodet-s-coco", "picodet-l-coco"]
+
+    for alias in aliases:
+        checkpoint = PICODET_OBJECT_DETECTION_MODEL_REGISTRY.get_alias_metadata(
+            alias
+        ).downloadable_checkpoint
         assert task_model_helpers.DOWNLOADABLE_MODEL_URL_AND_HASH[alias] == (
             checkpoint.url,
             checkpoint.sha256,
@@ -120,9 +197,10 @@ def test_download_checkpoint__unknown_name__raises_generic() -> None:
     assert "convert_checkpoint_dav2" not in message
 
 
-def test_init_model_from_checkpoint__legacy_dinov2_ltdetr_reroutes_to_generic() -> None:
+def test_init_model_from_checkpoint__legacy_dinov2_uses_registered_decoder() -> None:
+    model_name = "dinov2/vits14-noreg-ltdetr"
     reference_model = LTDETRObjectDetection(
-        model_name="dinov3/vitt16-notpretrained-ltdetr",
+        model_name=model_name,
         classes={0: "class_0", 1: "class_1"},
         image_size=(256, 256),
         load_weights=False,
@@ -138,9 +216,11 @@ def test_init_model_from_checkpoint__legacy_dinov2_ltdetr_reroutes_to_generic() 
                 ".DINOv2LTDETRObjectDetection"
             ),
             "model_init_args": {
-                "model_name": "dinov3/vitt16-notpretrained-ltdetr",
+                "model_name": model_name,
                 "classes": {0: "class_0", 1: "class_1"},
                 "image_size": (256, 256),
+                # This matches the hosted legacy checkpoint: decoder_name was not
+                # stored, so the versioned model registry defines the architecture.
             },
             "train_model": train_state_dict,
         },
@@ -148,7 +228,8 @@ def test_init_model_from_checkpoint__legacy_dinov2_ltdetr_reroutes_to_generic() 
     )
 
     assert isinstance(model, LTDETRObjectDetection)
-    assert model.init_args["model_name"] == "dinov3/vitt16-notpretrained-ltdetr"
-    assert model.init_args["decoder_name"] == "rtdetrv2"
+    assert model.init_args["model_name"] == model_name
+    assert model.init_args["decoder_name"] is None
+    assert isinstance(model.decoder, RTDETRTransformerv2)
     for name, param in model.state_dict().items():
-        assert torch.equal(param, reference_model.state_dict()[name])
+        torch.testing.assert_close(param, reference_model.state_dict()[name])

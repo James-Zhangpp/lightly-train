@@ -11,7 +11,7 @@ import copy
 import logging
 import math
 import re
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import torch
 from lightning_fabric import Fabric
@@ -36,6 +36,10 @@ from lightly_train._metrics.detection.task_metric import (
     ObjectDetectionTaskMetricArgs,
 )
 from lightly_train._optim import optimizer_helpers
+from lightly_train._pre_post_processing.object_detection import ObjectDetectionOutput
+from lightly_train._task_models.ltdetr_object_detection.config import (
+    LTDETR_MODEL_REGISTRY,
+)
 from lightly_train._task_models.ltdetr_object_detection.dino_vit_wrapper import (
     DINOSTAs,
 )
@@ -44,6 +48,7 @@ from lightly_train._task_models.ltdetr_object_detection.ecvit_vit_wrapper import
 )
 from lightly_train._task_models.ltdetr_object_detection.task_model import (
     LTDETRObjectDetection,
+    is_edgecrafter_model,
 )
 from lightly_train._task_models.ltdetr_object_detection.transforms import (
     DINOv2LTDETRObjectDetectionTrainTransformV2,
@@ -52,6 +57,7 @@ from lightly_train._task_models.ltdetr_object_detection.transforms import (
     LTDETRObjectDetectionTrainTransformArgs,
     LTDETRObjectDetectionValTransform,
     LTDETRObjectDetectionValTransformArgs,
+    LTDETRv2ObjectDetectionTrainTransform,
 )
 from lightly_train._task_models.object_detection_components.dfine_criterion import (
     DFINECriterion,
@@ -103,21 +109,39 @@ logger = logging.getLogger(__name__)
 _DINOV2_PREFIX = "dinov2/"
 
 
+def _decode_predictions_for_metrics(
+    model: LTDETRObjectDetection,
+    outputs: dict[str, Tensor],
+    orig_target_sizes: Tensor,
+) -> list[dict[str, Tensor]]:
+    labels, boxes, scores = model.postprocessor.decode(
+        ObjectDetectionOutput(
+            logits=outputs["pred_logits"], boxes=outputs["pred_boxes"]
+        ),
+        orig_target_sizes,
+    )
+    return [
+        {"labels": labels_i, "boxes": boxes_i, "scores": scores_i}
+        for labels_i, boxes_i, scores_i in zip(labels, boxes, scores)
+    ]
+
+
 class BaseLTDETRObjectDetectionTrainArgs(TrainModelArgs):
     """Shared defaults for LTDETRObjectDetectionTrainArgs and
     DINOv2LTDETRObjectDetectionTrainArgsV2.
 
     Only holds fields whose defaults are identical across both subclasses.
-    Fields that differ (decoder_name, lr, backbone_lr_factor, scheduler_name,
-    lr_warmup_steps, patch_size) as well as default_batch_size/default_steps,
-    resolve_auto, and the effective_loss_weight_dict/effective_losses computed
-    fields are defined individually on each subclass.
+    Fields that differ (lr, backbone_lr_factor, scheduler_name, lr_warmup_steps,
+    patch_size) as well as default_batch_size/default_steps, resolve_auto, and the
+    effective_loss_weight_dict/effective_losses computed fields are defined
+    individually on each subclass.
     """
 
     backbone_weights: PathLike | None = None
     backbone_url: str = ""
     backbone_args: dict[str, Any] = {}
     backbone_freeze: bool = False
+    decoder_name: Literal["auto", "rtdetrv2", "dfine"] = "auto"
 
     use_ema_model: bool = True
     ema_momentum: float = 0.9999
@@ -154,6 +178,35 @@ class BaseLTDETRObjectDetectionTrainArgs(TrainModelArgs):
     scheduler_flat_steps: int | Literal["auto"] = "auto"
     scheduler_no_aug_steps: int | Literal["auto"] = "auto"
 
+    def _resolve_decoder_name(
+        self, model_name: str, model_init_args: dict[str, Any]
+    ) -> None:
+        """Resolve the decoder from user args, checkpoint metadata, or architecture.
+
+        ``decoder_name`` is optional checkpoint metadata, not a checkpoint-version
+        marker. If it is absent, the checkpoint's stored model name determines the
+        versioned architecture through ``LTDETR_MODEL_REGISTRY``.
+        """
+        checkpoint_decoder_name = model_init_args.get("decoder_name")
+        if self.decoder_name != "auto":
+            if (
+                checkpoint_decoder_name is not None
+                and self.decoder_name != checkpoint_decoder_name
+            ):
+                logger.warning(
+                    f"Requested decoder_name={self.decoder_name!r} differs from "
+                    f"the checkpoint's decoder_name={checkpoint_decoder_name!r}; "
+                    "the checkpoint decoder weights will not load cleanly."
+                )
+            return
+
+        if checkpoint_decoder_name is not None:
+            self.decoder_name = checkpoint_decoder_name
+            return
+
+        config = LTDETR_MODEL_REGISTRY.get(alias=model_name)()
+        self.decoder_name = config.transformer.decoder_name
+
 
 class LTDETRObjectDetectionTrainArgs(BaseLTDETRObjectDetectionTrainArgs):
     default_batch_size: ClassVar[int] = 32
@@ -162,7 +215,6 @@ class LTDETRObjectDetectionTrainArgs(BaseLTDETRObjectDetectionTrainArgs):
     )
 
     patch_size: int | Literal["auto"] | None = "auto"
-    decoder_name: Literal["rtdetrv2", "dfine"] = "dfine"
 
     # Optimizer configuration
     lr: float = Field(
@@ -206,13 +258,7 @@ class LTDETRObjectDetectionTrainArgs(BaseLTDETRObjectDetectionTrainArgs):
                 # runs before the task-model constructor, so without it the
                 # aliases would raise
                 # ``Unable to resolve patch_size='auto'`` here.
-                try:
-                    package_name = LTDETRObjectDetection.parse_model_name(
-                        model_name=model_name
-                    )["package_name"]
-                except ValueError:
-                    package_name = ""
-                if package_name == "edgecrafter":
+                if is_edgecrafter_model(model_name):
                     self.patch_size = 16
                 else:
                     match = re.match(
@@ -229,23 +275,9 @@ class LTDETRObjectDetectionTrainArgs(BaseLTDETRObjectDetectionTrainArgs):
                             "Unable to resolve patch_size='auto' for model "
                             f"{model_name!r}. Please provide a concrete patch_size."
                         )
-        # Resolve ``decoder_name`` against the checkpoint architecture when
-        # the user did not explicitly set it. This preserves backward
-        # compatibility for hosted/local checkpoints trained with the previous
-        # RTDETRv2 default: loading those checkpoints builds a D-FINE model by
-        # default and would otherwise leave the decoder partially initialized.
-        # TODO(TRN-2243): Replace this compatibility shim with separate
-        # LTDETRv2/LTDETRv3 train-args classes once the config split lands.
-        checkpoint_decoder_name = model_init_args.get("decoder_name")
-        if checkpoint_decoder_name is not None:
-            if "decoder_name" not in self.model_fields_set:
-                self.decoder_name = checkpoint_decoder_name
-            elif self.decoder_name != checkpoint_decoder_name:
-                logger.warning(
-                    f"Requested decoder_name={self.decoder_name!r} differs from "
-                    f"the checkpoint's decoder_name={checkpoint_decoder_name!r}; "
-                    "the checkpoint decoder weights will not load cleanly."
-                )
+        self._resolve_decoder_name(
+            model_name=model_name, model_init_args=model_init_args
+        )
 
         if (
             self.lr_warmup_steps == "auto"
@@ -284,13 +316,24 @@ class LTDETRObjectDetectionTrainArgs(BaseLTDETRObjectDetectionTrainArgs):
         return list(self.losses)
 
 
+class LTDETRv2ObjectDetectionLargeTrainArgs(LTDETRObjectDetectionTrainArgs):
+    # ltdetrv2-m/l/x (EdgeCrafter Tiny+/Small/Small+ backbones) benchmark
+    # recipe uses a lower backbone LR factor than the s variant.
+    backbone_lr_factor: float = 0.0025
+
+
+_LARGE_LTDETRV2_BACKBONES = {
+    "edgecrafter/ecvittplus",
+    "edgecrafter/ecvits",
+    "edgecrafter/ecvitsplus",
+}
+
+
 class DINOv2LTDETRObjectDetectionTrainArgsV2(BaseLTDETRObjectDetectionTrainArgs):
     default_batch_size: ClassVar[int] = 16
     default_steps: ClassVar[int] = (
         100_000 // 16 * 72
     )  # TODO (Lionel, 10/25): Adjust default steps.
-
-    decoder_name: Literal["rtdetrv2", "dfine"] = "rtdetrv2"
 
     # DINOv2 ViT backbones are always patch-14 (vits14/vitb14/vitl14/vitg14), matching
     # LTDETR_MODEL_REGISTRY's dinov2 backbone_args.
@@ -321,6 +364,9 @@ class DINOv2LTDETRObjectDetectionTrainArgsV2(BaseLTDETRObjectDetectionTrainArgs)
         model_init_args: dict[str, Any],
         data_args: TaskDataArgs,
     ) -> None:
+        self._resolve_decoder_name(
+            model_name=model_name, model_init_args=model_init_args
+        )
         if self.scheduler_flat_steps == "auto" or self.scheduler_no_aug_steps == "auto":
             scheduler_step_schedule = resolve_ltdetr_step_schedule(
                 total_steps=total_steps,
@@ -365,9 +411,16 @@ class LTDETRObjectDetectionTrain(TrainModel):
     @classmethod
     def get_train_model_args_cls(
         cls, model_name: str
-    ) -> type[LTDETRObjectDetectionTrainArgs | DINOv2LTDETRObjectDetectionTrainArgsV2]:
+    ) -> type[
+        LTDETRObjectDetectionTrainArgs
+        | LTDETRv2ObjectDetectionLargeTrainArgs
+        | DINOv2LTDETRObjectDetectionTrainArgsV2
+    ]:
         if model_name.startswith(_DINOV2_PREFIX):
             return DINOv2LTDETRObjectDetectionTrainArgsV2
+        config = LTDETR_MODEL_REGISTRY.get(alias=model_name)()
+        if config.backbone_name in _LARGE_LTDETRV2_BACKBONES:
+            return LTDETRv2ObjectDetectionLargeTrainArgs
         return LTDETRObjectDetectionTrainArgs
 
     @override
@@ -376,10 +429,13 @@ class LTDETRObjectDetectionTrain(TrainModel):
         cls, model_name: str
     ) -> type[
         LTDETRObjectDetectionTrainTransform
+        | LTDETRv2ObjectDetectionTrainTransform
         | DINOv2LTDETRObjectDetectionTrainTransformV2
     ]:
         if model_name.startswith(_DINOV2_PREFIX):
             return DINOv2LTDETRObjectDetectionTrainTransformV2
+        if is_edgecrafter_model(model_name):
+            return LTDETRv2ObjectDetectionTrainTransform
         return LTDETRObjectDetectionTrainTransform
 
     @override
@@ -424,6 +480,9 @@ class LTDETRObjectDetectionTrain(TrainModel):
         backbone_args: dict[str, Any] | None = model_args.backbone_args
         if not backbone_args:
             backbone_args = None
+        decoder_name = cast(
+            Literal["rtdetrv2", "dfine"], no_auto(model_args.decoder_name)
+        )
         self.model: LTDETRObjectDetection = LTDETRObjectDetection(
             model_name=model_name,
             image_size=no_auto(val_transform_args.image_size),
@@ -433,7 +492,7 @@ class LTDETRObjectDetectionTrain(TrainModel):
             backbone_args=backbone_args,
             patch_size=no_auto(model_args.patch_size),
             backbone_weights=model_args.backbone_weights,
-            decoder_name=model_args.decoder_name,
+            decoder_name=decoder_name,
             load_weights=load_weights,
         )
 
@@ -454,7 +513,7 @@ class LTDETRObjectDetectionTrain(TrainModel):
         )
 
         criterion: DFINECriterion | RTDETRCriterionv2
-        if model_args.decoder_name == "dfine":
+        if decoder_name == "dfine":
             self.train_loss_names = _DFINE_LOSS_NAMES
             self.val_loss_names = _RTDETRV2_LOSS_NAMES
             if not isinstance(self.model.decoder, DFINETransformer):
@@ -598,8 +657,10 @@ class LTDETRObjectDetectionTrain(TrainModel):
             orig_target_sizes_tensor = torch.tensor(
                 orig_target_sizes, device=samples.device
             )
-            results = self.model.postprocessor(
-                outputs, orig_target_sizes=orig_target_sizes_tensor
+            results = _decode_predictions_for_metrics(
+                model=self.model,
+                outputs=outputs,
+                orig_target_sizes=orig_target_sizes_tensor,
             )
             self.train_metrics.update_with_predictions(results, targets)
 
@@ -669,8 +730,10 @@ class LTDETRObjectDetectionTrain(TrainModel):
         orig_target_sizes_tensor = torch.tensor(
             orig_target_sizes, device=samples.device
         )
-        results: list[dict[str, Tensor]] = self.model.postprocessor(
-            outputs, orig_target_sizes=orig_target_sizes_tensor
+        results = _decode_predictions_for_metrics(
+            model=self.model,
+            outputs=outputs,
+            orig_target_sizes=orig_target_sizes_tensor,
         )
 
         # Metrics
