@@ -12,7 +12,13 @@ from typing import Any, Literal
 
 import torch
 from pydantic import Field
-from torch.export import Dim
+try:
+    from torch.export import Dim
+except ImportError:
+    try:
+        from torch.export.dynamic_shapes import Dim  # type: ignore[no-redef]
+    except (ImportError, ModuleNotFoundError):
+        Dim = None  # type: ignore[assignment,misc]
 from typing_extensions import Annotated
 
 from lightly_train._configs.config import ConfigsNamespace, PydanticConfig

@@ -52,7 +52,23 @@ import copy
 from typing import Any, Literal, Mapping, cast
 
 import torch
-from lightly.loss import PatchKernelAlignmentLoss, roi_resample_to_grid
+try:
+    from lightly.loss import PatchKernelAlignmentLoss, roi_resample_to_grid
+except ImportError:
+    # lightly 版本不含 PatchKernelAlignmentLoss 时提供占位实现，
+    # 仅在实际使用 DINOv31 方法时才会报错提示升级
+    class PatchKernelAlignmentLoss:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError(
+                "PatchKernelAlignmentLoss requires a newer version of the 'lightly' "
+                "package. Please run: pip install --upgrade lightly"
+            )
+
+    def roi_resample_to_grid(*args: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
+        raise RuntimeError(
+            "roi_resample_to_grid requires a newer version of the 'lightly' "
+            "package. Please run: pip install --upgrade lightly"
+        )
 from lightly.utils.scheduler import cosine_schedule
 from torch import Tensor
 from torch.nn import Module

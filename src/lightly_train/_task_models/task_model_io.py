@@ -15,7 +15,13 @@ from typing import Any
 import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
-from torch.export.dynamic_shapes import Dim
+try:
+    from torch.export import Dim
+except ImportError:
+    try:
+        from torch.export.dynamic_shapes import Dim  # type: ignore[no-redef]
+    except (ImportError, ModuleNotFoundError):
+        Dim = None  # type: ignore[assignment,misc]
 from typing_extensions import Self
 
 from lightly_train._export.onnx_helpers import check_model_input_spec_requirements
@@ -188,11 +194,18 @@ class BaseModelOutput(ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        torch.utils._pytree.register_pytree_node(
-            cls,
-            _model_output_flatten,
-            functools.partial(_model_output_unflatten, output_type=cls),
+        # 兼容不同 PyTorch 版本: register_pytree_node (>=2.2) vs _register_pytree_node (<2.2)
+        _reg_fn = getattr(
+            torch.utils._pytree,
+            "register_pytree_node",
+            getattr(torch.utils._pytree, "_register_pytree_node", None),
         )
+        if _reg_fn is not None:
+            _reg_fn(
+                cls,
+                _model_output_flatten,
+                functools.partial(_model_output_unflatten, output_type=cls),
+            )
 
 
 def _model_output_flatten(

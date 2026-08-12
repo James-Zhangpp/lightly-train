@@ -10,7 +10,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 import torch
-from torch.export import ExportedProgram
+try:
+    from torch.export import ExportedProgram
+except ImportError:
+    ExportedProgram = None  # type: ignore[assignment,misc]
 
 from lightly_train._export.onnx_helpers import (
     check_model_input_spec_requirements,

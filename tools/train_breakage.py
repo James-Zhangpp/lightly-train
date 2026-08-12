@@ -64,7 +64,7 @@ def parse_args():
                              "      'dinov3/vitl16-eomt' (Large大模型，特征提取能力极强), \n"
                              "      'segformer/b2' (快速微小缺陷重叠切片), \n"
                              "      'segformer/b5' (高精旗舰重叠切片模型)")
-    parser.add_argument("--data-dir", type=str, default="brasn_seg",
+    parser.add_argument("--data-dir", type=str, default="./DataSet/Breakage_small_seg_1024x416",
                         help="数据集目录名称（需放在 tools/ 目录下，内含 img_dir 和 ann_dir）")
     parser.add_argument("--classes", nargs="+", default=["In", "Pa", "Sc"], 
                         help="异常缺陷类别名称列表 (默认: ['In', 'Pa', 'Sc'])，自动映射 0: background, 1: In, 2: Pa, 3: Sc")
@@ -77,9 +77,9 @@ def parse_args():
     # ---------------------------------------------------------------------------
     # 2. 图像分辨率与尺寸对齐参数
     # ---------------------------------------------------------------------------
-    parser.add_argument("--image-width", type=int, default=400,
+    parser.add_argument("--image-width", type=int, default=1024,
                         help="训练输入宽度。调大(如400)获得8像素更细物理感受野提升微小点检测；调小(如200)加快训练降低显存")
-    parser.add_argument("--image-height", type=int, default=400,
+    parser.add_argument("--image-height", type=int, default=416,
                         help="训练输入高度。调大(如400)获得8像素更细物理感受野提升微小点检测；调小(如200)加快训练降低显存")
     parser.add_argument("--auto-image-size", action="store_true",
                         help="启用后自动按数据集最大原图尺寸对齐到 8/16 倍数，用于原图全尺寸训练")
@@ -289,14 +289,10 @@ def main():
                 "llrd": args.llrd,                           # 逐层学习率衰减率 (Layer-wise LR Decay)。如 0.85，深层学习率大，浅层 Backbone 学习率指数级衰减以保护预训练通用特征
                 "weight_decay": args.weight_decay,           # L2 权重衰减 (Regularization)。调大(如0.05)抑制小数据集过拟合；调小(如0.01)提高样品拟合度
                 "lr_warmup_steps": LR_WARMUP,                # Warmup 热身步数区间 (start_step, end_step)。在训练初期用极小学习率预热，防止刚开始梯度爆炸
-                "optimizer": args.optimizer,                 # 优化器算法。'adamw' (适合 Transformer 自适应梯度), 'sgdm' (带动量 SGD 适合平滑收敛)
-                "scheduler": args.scheduler,                 # 学习率退火调度策略。'cosine' (余弦退火，末期平滑收敛最佳), 'linear', 'polynomial'
-                "backbone_lr_multiplier": args.backbone_lr_mult, # Backbone 骨干网独立学习率倍率。设为 0.1 可使 Backbone 以极小学习率微调，防止破坏预训练特征
                 
                 # 💡【解码头架构与 Query 查询参数】
                 "num_queries": args.num_queries,             # Mask Query 缺陷查询向量数量。每个 Query 负责预测一个潜在缺陷对象；工业单图缺陷少时设为 10~20，防止过多空 Query 稀释注意力
                 "fix_num_upscale_blocks": False,             # 是否固定上采样模块数量。False 表示网络会根据图像输入尺寸 (H, W) 和 Patch Size 自动计算最优的上采样层数
-                "mask_threshold": args.mask_threshold,       # Mask 概率二值化阈值 (0.0~1.0)。调低(如0.3)提高极微小缺陷召回率(防漏检)；调高(如0.7)降低假阳性误检
                 
                 # 💡【微小缺陷点采样 Loss 参数 (Point Sampling for Micro Defects)】
                 "loss_num_points": args.loss_num_points,     # 计算 Mask Loss 时随机/重点采样的像素点数量 (默认 25000)。采样点越多，对极细划痕(Sc)和微小白点(Pa)边缘分割越精准
@@ -378,14 +374,7 @@ def main():
                     "prob": 0.2,                     # 20% 概率微小偏转
                 } if args.rotate_90_prob > 0 else None,
                 
-                # 💡【高斯模糊/磨砂失焦模拟 (Gaussian Blur)】
-                # 工业应用提示：设为 0.2 时，训练时随机对 20% 图片做轻微高斯模糊，
-                # 能够模拟生产线上工业相机镜头偶发灰尘、水汽、油污或机械震动带来的失焦模糊，增强模型鲁棒性。
-                "gaussian_blur": {
-                    "kernel_size": 5,                # 模糊核窗口大小 (5x5 像素)
-                    "sigma": (0.1, 2.0),             # 高斯分布标准差范围
-                    "prob": args.gaussian_blur_prob, # 触发概率 (0.0 表示禁用，0.2 表示开启防失焦增强)
-                } if args.gaussian_blur_prob > 0 else None,
+                # 注意: DINOv3-EoMT 分割模型的 transform_args 不支持 gaussian_blur 参数
                 
                 # 💡【ImageNet 标准像素归一化 (Normalize)】
                 # 将 0~255 像素缩放归一化为标准的 0~1 正态分布，加速神经网络收敛
