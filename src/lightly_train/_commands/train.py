@@ -15,7 +15,7 @@ from typing import Any, Literal, Sequence
 
 import pytorch_lightning
 from omegaconf import DictConfig
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pytorch_lightning.accelerators.accelerator import Accelerator
 from pytorch_lightning.loggers import Logger
 from pytorch_lightning.strategies.strategy import Strategy
@@ -25,6 +25,7 @@ from pytorch_lightning.trainer.connectors.accelerator_connector import (  # type
 from torch.nn import Module
 
 from lightly_train import _float32_matmul_precision, _logging, _system
+from lightly_train._activation_checkpointing import ActivationCheckpointingArgs
 from lightly_train._callbacks import callback_helpers
 from lightly_train._callbacks.callback_args import CallbackArgs
 from lightly_train._commands import _warnings, common_helpers, train_helpers
@@ -59,6 +60,7 @@ def pretrain(
     embed_dim: int | None = None,
     epochs: int | Literal["auto"] = "auto",
     batch_size: int = 128,
+    gradient_accumulation_steps: int = 1,
     num_workers: int | Literal["auto"] = "auto",
     devices: int | str | list[int] = "auto",
     num_nodes: int = 1,
@@ -78,6 +80,7 @@ def pretrain(
     loader_args: dict[str, Any] | None = None,
     trainer_args: dict[str, Any] | None = None,
     model_args: dict[str, Any] | None = None,
+    activation_checkpoint_args: dict[str, Any] | None = None,
     resume: bool | None = None,  # Deprecated, use `resume_interrupted`` instead.
 ) -> None:
     """Pretrain a self-supervised model.
@@ -116,6 +119,9 @@ def pretrain(
         batch_size:
             Global batch size. The batch size per device/GPU is inferred from this value
             and the number of devices and nodes.
+        gradient_accumulation_steps:
+            Number of gradient accumulation steps. Set to 1 to disable gradient accumulation.
+            The effective global batch size is batch_size * gradient_accumulation_steps.
         num_workers:
             Number of workers for the dataloader per device/GPU. 'auto' automatically
             sets the number of workers based on the available CPU cores.
@@ -235,6 +241,12 @@ def pretrain(
             parameter. For example, if ``model='torchvision/<model_name>'``, the
             arguments are passed to
             ``torchvision.models.get_model(model_name, **model_args)``.
+        activation_checkpoint_args:
+            Activation checkpointing configuration to reduce memory usage during
+            training. Pass ``{"enabled": True}`` to enable checkpointing for all
+            transformer blocks. Use ``{"enabled": True, "every_n_blocks": 2}``
+            to checkpoint every other block. Only supported for ViT-based
+            backbones (DINOv2, DINOv3, EdgeCrafter).
         resume:
             Deprecated. Use ``resume_interrupted`` instead.
     """
@@ -252,6 +264,7 @@ def train(
     embed_dim: int | None = None,
     epochs: int | Literal["auto"] = "auto",
     batch_size: int = 128,
+    gradient_accumulation_steps: int = 1,
     num_workers: int | Literal["auto"] = "auto",
     devices: int | str | list[int] = "auto",
     num_nodes: int = 1,
@@ -271,6 +284,7 @@ def train(
     loader_args: dict[str, Any] | None = None,
     trainer_args: dict[str, Any] | None = None,
     model_args: dict[str, Any] | None = None,
+    activation_checkpoint_args: dict[str, Any] | None = None,
     resume: bool | None = None,  # Deprecated, use `resume_interrupted`` instead.
 ) -> None:
     """Deprecated. Use :func:`pretrain` instead."""
@@ -369,6 +383,13 @@ def train_from_config(config: TrainConfig, called_via_train: bool = False) -> No
             model_args=config.model_args,
             num_input_channels=no_auto(transform_instance.transform_args.num_channels),
         )
+        ac_args = train_helpers.get_activation_checkpoint_args(
+            config.activation_checkpoint_args
+        )
+        if ac_args.enabled:
+            train_helpers.set_activation_checkpointing(
+                wrapped_model=wrapped_model, args=ac_args
+            )
         embedding_model = train_helpers.get_embedding_model(
             wrapped_model=wrapped_model, embed_dim=config.embed_dim
         )
@@ -412,6 +433,7 @@ def train_from_config(config: TrainConfig, called_via_train: bool = False) -> No
         trainer_instance = train_helpers.get_trainer(
             out=out_dir,
             epochs=config.epochs,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
             accelerator=config.accelerator,
             strategy=config.strategy,
             devices=config.devices,
@@ -436,13 +458,18 @@ def train_from_config(config: TrainConfig, called_via_train: bool = False) -> No
             total_num_devices=total_num_devices,
             loader_args=config.loader_args,
         )
+        global_batch_size = config.batch_size
+        per_device_batch_size = global_batch_size // total_num_devices
+        effective_global_batch_size = (
+            global_batch_size * config.gradient_accumulation_steps
+        )
         config.num_workers = common_helpers.get_num_workers(
             num_workers=config.num_workers,
             num_devices_per_node=total_num_devices // trainer_instance.num_nodes,
         )
         dataloader = train_helpers.get_dataloader(
             dataset=dataset,
-            batch_size=config.batch_size // total_num_devices,
+            batch_size=per_device_batch_size,
             num_workers=config.num_workers,
             loader_args=config.loader_args,
         )
@@ -471,7 +498,7 @@ def train_from_config(config: TrainConfig, called_via_train: bool = False) -> No
             method_args=config.method_args,
             optimizer_args=config.optim_args,
             embedding_model=embedding_model,
-            global_batch_size=config.batch_size,
+            global_batch_size=effective_global_batch_size,
             num_input_channels=no_auto(transform_instance.transform_args.num_channels),
         )
         train_helpers.load_checkpoint(
@@ -532,6 +559,7 @@ class TrainConfig(PydanticConfig):
     embed_dim: int | None = None
     epochs: int | Literal["auto"] = "auto"
     batch_size: int = 128
+    gradient_accumulation_steps: int = Field(default=1, ge=1)
     num_workers: int | Literal["auto"] = "auto"
     devices: int | str | list[int] = "auto"
     num_nodes: int = 1
@@ -551,6 +579,9 @@ class TrainConfig(PydanticConfig):
     loader_args: dict[str, Any] | None = None
     trainer_args: dict[str, Any] | None = None
     model_args: dict[str, Any] | None = None
+    activation_checkpoint_args: dict[str, Any] | ActivationCheckpointingArgs | None = (
+        None
+    )
     resume: bool | None = None  # Deprecated, use `resume_interrupted` instead.
 
     # Allow arbitrary field types such as Module, Dataset, Accelerator, ...
@@ -565,6 +596,7 @@ class FunctionTrainConfig(TrainConfig):
     optim: str = "auto"
     optim_args: dict[str, Any] | None = None
     transform_args: dict[str, Any] | None = None
+    activation_checkpoint_args: dict[str, Any] | None = None
 
 
 class CLITrainConfig(FunctionTrainConfig):

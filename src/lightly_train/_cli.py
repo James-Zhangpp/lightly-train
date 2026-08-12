@@ -92,6 +92,10 @@ _PRETRAIN_HELP_MSG = f"""
         batch_size (int):
             Global batch size. The batch size per device/GPU is inferred from this value
             and the number of devices and nodes. Default: {_train_cfg.batch_size}
+        gradient_accumulation_steps (int):
+            Number of gradient accumulation steps. Set to 1 to disable gradient accumulation.
+            The effective global batch size is batch_size * gradient_accumulation_steps.
+            Default: {_train_cfg.gradient_accumulation_steps}
         num_workers (int | "auto"):
             Number of workers for the dataloader per device/GPU. 'auto' automatically  
             sets the number of workers based on the available CPU cores. Default: {_train_cfg.num_workers}
@@ -199,6 +203,13 @@ _PRETRAIN_HELP_MSG = f"""
             parameter. For example, if `model='torchvision/<model_name>'`, the
             arguments are passed to
             `torchvision.models.get_model(model_name, **model_args)`.
+        activation_checkpoint_args (dict):
+            Activation checkpointing configuration to reduce memory usage.
+            Supported keys: `enabled` (bool), `every_n_blocks` (int).
+            Only supported for ViT-based backbones (DINOv2, DINOv3, EdgeCrafter).
+            Backbones with chunked blocks (DINOv2 ViT-L/14 and ViT-g/14) checkpoint
+            whole chunks, so there `every_n_blocks` counts chunks instead of blocks.
+            Default: null
         resume (bool):
             Deprecated. Use `resume_interrupted` instead.
             Default: null
