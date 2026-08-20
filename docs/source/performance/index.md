@@ -59,6 +59,41 @@ might contain performance improvements.
   they were built with support for your CUDA version.
 - Install newer versions of Python.
 
+(speeding-up-validation-metrics)=
+
+## Speeding Up Validation Metrics
+
+For object detection and instance segmentation, mAP is computed in a single blocking
+call at the end of every validation run. On large validation sets this can take a
+noticeable amount of time during which no training happens.
+
+The mAP computation is done by [pycocotools](https://github.com/ppwwyyxx/cocoapi) by
+default. Installing [faster-coco-eval](https://github.com/MiXaiLL76/faster_coco_eval), a
+C++ reimplementation of the same algorithm, makes it roughly **5x faster**:
+
+```bash
+pip install "lightly-train[faster-coco-eval]"
+```
+
+Both backends return identical values, so this does not change your metrics or which
+checkpoint is selected as the best one. Once installed, it is used automatically for
+object detection; no configuration is needed.
+
+```{note}
+For instance segmentation, Lightly**Train** keeps using pycocotools even when
+faster-coco-eval is installed. Instance segmentation spends most of its metric time
+encoding masks rather than computing mAP, and faster-coco-eval's mask encoding is
+slower, which would make the overall validation slower rather than faster.
+
+You can always select a backend explicitly via
+[`metric_args`](../settings/train_settings.md#metric_args):
+
+    metric_args={"map": {"backend": "faster_coco_eval"}}
+```
+
+This does not affect semantic segmentation, panoptic segmentation, or classification,
+which use metrics that do not depend on pycocotools.
+
 (finding-the-performance-bottleneck)=
 
 ## Finding the Performance Bottleneck
@@ -72,13 +107,18 @@ The `data_wait` percentage is calculated as out of the `batch_time` and the `dat
 as\
 `data_time / (batch_time + data_time)`.
 
-The `batch_time` is the time in seconds taken by the main process for the forward,
-backward, and optimizer step. It uses the accelerator(s) like GPUs if available.
+The `batch_time` is the time in seconds taken by the forward, backward, and optimizer
+step. On CPU it is measured at the training batch hooks. On CUDA it is measured using
+events recorded on the CUDA stream, so asynchronous GPU execution is included.
 
-The `data_time` is the time in seconds the main process waits while fetching the next
-batch from the dataloading workers. As the dataloading workers run in parallel and
-already prepare the next batch while the current batch is processed, the `data_time`
-should be close to zero.
+The `data_time` is the part of the training cycle not spent executing the batch. On CPU
+this is the time between the previous batch ending and the next batch starting. On CUDA
+it is estimated by subtracting the GPU batch time from the wall-clock time between two
+batch starts. It therefore also includes small amounts of framework overhead. CUDA
+metrics are logged only after their events have completed and can appear a few batches
+after they were measured. As the dataloading workers run in parallel and already prepare
+the next batch while the current batch is processed, the `data_time` should be close to
+zero.
 
 Both the `batch_time` and the `data_time` are visible in the MLflow, TensorBoard, and
 Weights & Biases logs.
