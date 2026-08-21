@@ -36,6 +36,8 @@ class ChannelDropArgs(PydanticConfig):
 class ResizeArgs(PydanticConfig):
     height: int | Literal["auto"]
     width: int | Literal["auto"]
+    keep_aspect_ratio: bool = False
+    pad_value: tuple[int, int, int] = (114, 114, 114)
 
     def resolve_auto(self, height: int, width: int) -> None:
         if self.height == "auto":

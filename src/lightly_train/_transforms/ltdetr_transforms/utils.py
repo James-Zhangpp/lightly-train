@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import cv2
 from albumentations import (
     BasicTransform,
     HorizontalFlip,
@@ -21,6 +22,8 @@ from albumentations import (
     Rotate,
     ToFloat,
     VerticalFlip,
+    LongestMaxSize,
+    PadIfNeeded,
 )
 from lightning_utilities.core.imports import RequirementCache
 from torch import Tensor
@@ -207,6 +210,8 @@ def build_ltdetr_sample_transform_parts(
         "random_rotate_90": None,
         "random_rotate": None,
         "resize": None,
+        "longest_max_size": None,
+        "pad_if_needed": None,
         "to_float": ToFloat(max_value=255.0),
         "normalize": None,
     }
@@ -261,10 +266,21 @@ def build_ltdetr_sample_transform_parts(
             p=transform_args.random_rotate.prob,
         )
     if transform_args.resize is not None:
-        parts["resize"] = Resize(
-            height=no_auto(transform_args.resize.height),
-            width=no_auto(transform_args.resize.width),
-        )
+        if getattr(transform_args.resize, "keep_aspect_ratio", False):
+            parts["longest_max_size"] = LongestMaxSize(
+                max_size=max(no_auto(transform_args.resize.height), no_auto(transform_args.resize.width))
+            )
+            parts["pad_if_needed"] = PadIfNeeded(
+                min_height=no_auto(transform_args.resize.height),
+                min_width=no_auto(transform_args.resize.width),
+                border_mode=cv2.BORDER_CONSTANT,
+                value=getattr(transform_args.resize, "pad_value", (114, 114, 114))
+            )
+        else:
+            parts["resize"] = Resize(
+                height=no_auto(transform_args.resize.height),
+                width=no_auto(transform_args.resize.width),
+            )
     if transform_args.normalize is not None:
         parts["normalize"] = Normalize(
             mean=no_auto(transform_args.normalize).mean,
@@ -292,10 +308,12 @@ def ordered_ltdetr_sample_transforms(
         ("random_rotate_90", True),
         ("random_rotate", True),
         ("resize", True),
+        ("longest_max_size", True),
+        ("pad_if_needed", True),
         ("to_float", True),
         ("normalize", True),
     ):
-        transform = parts[key]
+        transform = parts.get(key)
         if transform is not None and active:
             transforms.append(transform)
     return transforms
