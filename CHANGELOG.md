@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Add multi-scale feature support to the `torchvision` model package. The ResNet,
+  ConvNeXt and ShuffleNetV2 model wrappers now implement the multi-scale feature
+  interface, exposing intermediate feature maps for dense prediction tasks. These
+  backbones are now available for the linear semantic segmentation task, for example
+  with `model="torchvision/resnet50-linear"`.
 - Add [C++ inference recipes](examples/cpp/README.md) for LT-DETR object detection,
   covering ONNX Runtime's CUDA execution provider and TensorRT directly, both with
   zero-copy GPU input/output allocation.
@@ -16,11 +21,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   AMD GPUs.
 - Restore the DINOv3.1 pretraining method now that its LightlySSL dependencies are
   available from PyPI.
+- The aspect ratio range of the random resized crop can now be configured with
+  `min_ratio` and `max_ratio`, for pretraining via
+  `transform_args={"random_resize": {"min_ratio": ..., "max_ratio": ...}}` and for
+  classification fine-tuning via `transform_args={"random_crop": {...}}`. The defaults
+  are unchanged at `(3 / 4, 4 / 3)`.
 - Add an optional `faster-coco-eval` dependency that speeds up the mAP computation at
   the end of every validation run by ~5x for object detection. Install it with
   `pip install "lightly-train[faster-coco-eval]"`; it is then used automatically. Both
   backends return identical metric values. The backend can be selected explicitly with
   `metric_args={"map": {"backend": ...}}`.
+- Add multi-scale feature support to the `edgecrafter` model package, exposing the ECViT
+  feature pyramid (strides 8, 16, 32) through the multi-scale feature interface.
 
 ### Changed
 
@@ -37,6 +49,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Removed
 
 ### Fixed
+
+- Fix DINOv3 LT-DETR `-eupe` backbone aliases. All six `dinov3/<size>-eupe-ltdetr` model
+  names (ConvNeXt-tiny/small/base, ViT-tiny/small/base) now resolve to config classes
+  whose `backbone_name` points at the corresponding EUPE weights. Previously each alias
+  was registered on the plain (non-EUPE) config class, so the name promised EUPE weights
+  while non-EUPE weights were loaded. The `-notpretrained-linear` half of #980 was
+  already fixed on main.
+- Setting `transform_args={"random_resize": None}` during pretraining now only resizes
+  images instead of also center cropping them to an aspect ratio between 3:4 and 4:3.
+  Images that are not roughly square were previously cropped even though cropping was
+  disabled.
+- Fix DINOv3 LT-DETR object detection `-notpretrained` backbone aliases. Every DINOv3
+  backbone size (ConvNeXt-tiny/small/base/large, ViT-tiny/tiny+/small/base/large) now
+  has a working `dinov3/<size>-notpretrained-ltdetr` model name that builds a randomly
+  initialized backbone, matching how DINOv2 already works. Previously only
+  `dinov3/vitt16-notpretrained-ltdetr` existed, and it was broken: it silently loaded
+  pretrained weights because it pointed to the same config class as
+  `dinov3/vitt16-ltdetr`. Also add `dinov2/vits14-noreg-notpretrained-ltdetr` for the
+  legacy no-registers DINOv2 backbone.
+- Fix DINOv3 linear semantic segmentation `-notpretrained` backbone aliases.
+  `dinov3/vitt16-notpretrained-linear` and `dinov3/vitt16plus-notpretrained-linear`
+  silently loaded pretrained weights, and the remaining DINOv3 sizes had no
+  `dinov3/<size>-notpretrained-linear` model name at all.
 
 ### Security
 
