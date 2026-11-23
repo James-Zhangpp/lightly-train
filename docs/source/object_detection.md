@@ -54,6 +54,29 @@ requires a few lines of code using the
 {py:func}`train_object_detection <lightly_train.train_object_detection>` function. See
 [data](#object-detection-data) for details on how to prepare your dataset.
 
+If you don't have a dataset at hand, download a small ready-to-use example dataset:
+
+```bash
+# The images, labels and the config file for this task.
+wget https://github.com/lightly-ai/coco128_yolo/releases/download/v0.0.3/object_detection.zip && unzip -q object_detection.zip
+```
+
+```python
+import lightly_train
+
+if __name__ == "__main__":
+    lightly_train.train_object_detection(
+        out="out/my_experiment",
+        model="ltdetrv2-s-coco",
+        data="object_detection/config.yaml",
+        steps=100,  # Small number of steps for demonstration, default is 266_112.
+        batch_size=4,  # Small batch size for demonstration, default is 32.
+    )
+```
+
+`data` also accepts a dictionary with the same keys as the YAML file, which is useful if
+you want to set them programmatically. See [Data](#object-detection-data) for details:
+
 ```python
 import lightly_train
 
@@ -291,12 +314,13 @@ lightly_train.train_object_detection(
 )
 ```
 
-Relative paths in YAML-backed configs are resolved relative to the YAML file. Any
-top-level keys in the YAML file that are not part of the configuration are ignored, but
-unknown nested keys still raise a validation error. Training uses the `train` and `val`
-splits; optional `test` entries are accepted by the data config for compatibility but
-are not used during training. The same `data` argument (dictionary or YAML path) is also
-accepted by [`benchmark_object_detection`](#object-detection-benchmark).
+Relative paths in YAML-backed configs are resolved relative to the YAML file, while
+relative paths in a dictionary are resolved relative to the current working directory.
+Any top-level keys in the YAML file that are not part of the configuration are ignored,
+but unknown nested keys still raise a validation error. Training uses the `train` and
+`val` splits; optional `test` entries are accepted by the data config for compatibility
+but are not used during training. The same `data` argument (dictionary or YAML path) is
+also accepted by [`benchmark_object_detection`](#object-detection-benchmark).
 
 If you would like to skip specific classes during training, add their IDs to the
 optional `ignore_classes` list. The trainer omits these classes from loss computation
@@ -836,6 +860,11 @@ The `model` can be a path to an exported model, a model hosted by LightlyTrain (
 `"dinov3/vitt16-ltdetr-coco"`), or a model loaded with the `lightly_train.load_model()`
 function. The `data` argument accepts the same dictionary or YAML path as
 [`train_object_detection`](#object-detection-data).
+
+The benchmark matches dataset classes to model classes by name. The class ids in the
+dataset do not have to match the class ids of the model. Each dataset class must have a
+model class with the same name. Predictions for model classes that are not in the
+dataset are ignored.
 
 The command returns a `BenchmarkResult` and writes two files to the `out` directory:
 

@@ -12,13 +12,6 @@ from typing import Any, Literal
 
 import torch
 from pydantic import Field
-try:
-    from torch.export import Dim
-except ImportError:
-    try:
-        from torch.export.dynamic_shapes import Dim  # type: ignore[no-redef]
-    except (ImportError, ModuleNotFoundError):
-        Dim = None  # type: ignore[assignment,misc]
 from typing_extensions import Annotated
 
 from lightly_train._configs.config import ConfigsNamespace, PydanticConfig
@@ -675,6 +668,8 @@ class DetectorConfig(PydanticConfig):
         input_channels: int,
     ) -> ModelInputSpec:
         check_model_input_spec_requirements()
+        from torch.export import Dim
+
         return ModelInputSpec(
             input_specs={
                 "images": TensorSpec(

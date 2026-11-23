@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 env:
@@ -21,41 +22,42 @@ jobs:
     name: Detect Code Changes
     runs-on: ubuntu-latest
     outputs:
-      run-tests: ${{ steps.filter.outputs.run-tests == 'true' || steps.filter.outputs.this-workflow == 'true' }}
+      run-tests: ${{ steps.filter.outputs.run-tests }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
-          # Run unless the change provably cannot affect this job.
+          # Allowlist: run only if the change touches a file this job reads. A new
+          # folder that the job depends on must be added here, otherwise changes to it
+          # silently skip this job.
           #
-          # 'some-with-excludes' (dorny/paths-filter >= v4.0.3): a file counts if it
-          # matches at least one positive pattern AND no negated pattern. At least one
-          # positive pattern is required, hence the leading '**'.
-          #
-          # Exclusions are final: a file excluded by '!.github/**' cannot be included
-          # back by a later pattern. Edits to this workflow are therefore picked up by
-          # the separate 'this-workflow' filter, OR-ed into the job output above.
-          #
-          # Denylist rather than allowlist on purpose: a new top-level directory should
-          # run CI by default instead of silently skipping it.
-          predicate-quantifier: 'some-with-excludes'
+          # Positive patterns are OR-ed by dorny/paths-filter, so each entry is purely
+          # additive.
           filters: |
             run-tests:
-              - '**'
-              - '!docs/**'
-              - '!docker/**'
-              - '!.github/**'
-            this-workflow:
+              - 'src/**'
+              - 'tests/**'
+              - 'templates/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'Makefile'
+              - '.test_durations'
               - '.github/workflows/test_unit.yml'
-  test-unit:
-    name: Test Unit
+  test-unit-shard:
+    name: Test Unit Shard (${{ matrix.runner }}, ${{ matrix.group }}/${{ matrix.splits }})
     needs: detect-code-changes
     if: needs.detect-code-changes.outputs.run-tests == 'true'
     strategy:
       matrix:
-        runners: ["ubuntu-latest", "windows-latest"]
-    runs-on: ${{ matrix.runners }}
+        # Splits are balanced by test durations in .test_durations.
+        include:
+          - { runner: ubuntu-latest, splits: 2, group: 1 }
+          - { runner: ubuntu-latest, splits: 2, group: 2 }
+          - { runner: windows-latest, splits: 3, group: 1 }
+          - { runner: windows-latest, splits: 3, group: 2 }
+          - { runner: windows-latest, splits: 3, group: 3 }
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -73,4 +75,21 @@ jobs:
           make install-pinned-3.13
       - name: Run Pytest
         run: |
-          make test-ci-maximal
+          make test-ci-maximal PYTEST_ARGS="--splits ${{ matrix.splits }} --group ${{ matrix.group }}"
+  # Keeps the check names required by the main branch ruleset. Each check reports the
+  # result of all shards.
+  test-unit:
+    name: Test Unit (${{ matrix.runner }})
+    needs: [detect-code-changes, test-unit-shard]
+    if: always()
+    strategy:
+      matrix:
+        runner: ["ubuntu-latest", "windows-latest"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Shard Results
+        run: |
+          echo "detect-code-changes: ${{ needs.detect-code-changes.result }}"
+          echo "test-unit-shard: ${{ needs.test-unit-shard.result }}"
+          test "${{ needs.detect-code-changes.result }}" = "success"
+          test "${{ needs.test-unit-shard.result }}" = "success" -o "${{ needs.test-unit-shard.result }}" = "skipped"

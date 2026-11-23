@@ -10,21 +10,17 @@ from __future__ import annotations
 import functools
 from abc import ABC
 from dataclasses import dataclass, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
-try:
-    from torch.export import Dim
-except ImportError:
-    try:
-        from torch.export.dynamic_shapes import Dim  # type: ignore[no-redef]
-    except (ImportError, ModuleNotFoundError):
-        Dim = None  # type: ignore[assignment,misc]
 from typing_extensions import Self
 
 from lightly_train._export.onnx_helpers import check_model_input_spec_requirements
+
+if TYPE_CHECKING:
+    from torch.export import Dim
 
 
 class TensorSpec(BaseModel):
@@ -146,6 +142,8 @@ class ModelInputSpec(BaseModel):
     def dynamic_shapes(
         self, *, dynamic_batch_size: bool = True
     ) -> dict[str, tuple[Dim | Any, ...]]:
+        from torch.export import Dim
+
         result: dict[str, tuple[Dim | Any, ...]] = {}
         for name, dims in self.input_dynamic_shapes.items():
             new_dims = list(dims)
@@ -156,6 +154,8 @@ class ModelInputSpec(BaseModel):
 
     @staticmethod
     def _is_static_dim(dim: Dim | Any) -> bool:
+        from torch.export import Dim
+
         return bool(dim == Dim.STATIC)
 
     def _default_batch_size(self, name: str) -> int:
@@ -194,14 +194,9 @@ class BaseModelOutput(ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # 兼容不同 PyTorch 版本: register_pytree_node (>=2.2) vs _register_pytree_node (<2.2)
-        _reg_fn = getattr(
-            torch.utils._pytree,
-            "register_pytree_node",
-            getattr(torch.utils._pytree, "_register_pytree_node", None),
-        )
-        if _reg_fn is not None:
-            _reg_fn(
+        # Only needed for export. Public function is missing in torch<2.2.
+        if hasattr(torch.utils._pytree, "register_pytree_node"):
+            torch.utils._pytree.register_pytree_node(
                 cls,
                 _model_output_flatten,
                 functools.partial(_model_output_unflatten, output_type=cls),

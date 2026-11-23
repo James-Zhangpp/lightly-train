@@ -25,7 +25,6 @@ from albumentations import (
     LongestMaxSize,
     PadIfNeeded,
 )
-from lightning_utilities.core.imports import RequirementCache
 from torch import Tensor
 
 from lightly_train._configs.validate import no_auto
@@ -49,9 +48,6 @@ from lightly_train._transforms.transform import ActivationPolicyArgs
 from lightly_train.types import NDArrayBBoxes, NDArrayClasses
 
 logger = logging.getLogger(__name__)
-
-ALBUMENTATIONS_VERSION_GREATER_EQUAL_1_4_5 = RequirementCache("albumentations>=1.4.5")
-ALBUMENTATIONS_VERSION_GREATER_EQUAL_2_0_1 = RequirementCache("albumentations>=2.0.1")
 
 
 def resolve_image_size_for_patch_size(
